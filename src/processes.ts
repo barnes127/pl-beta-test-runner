@@ -22,9 +22,12 @@ export async function processIdentity(pid: number) {
 export async function spawnOwned(command: string, args: string[], options: {
     cwd: string;
     env: NodeJS.ProcessEnv;
+    stderrSink?: (chunk: Buffer) => void;
 }): Promise<OwnedProcess> {
     // No inherited environment, shell, stdin, stdout or stderr evidence.
-    const child = spawn(command, args, { ...options, shell: false, detached: true, stdio: 'ignore' });
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false, detached: true, stdio: options.stderrSink ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
+    if (options.stderrSink)
+        child.stderr!.on('data', options.stderrSink);
     await new Promise<void>((resolve, reject) => {
         child.once('spawn', resolve);
         child.once('error', () => reject(new RunnerError('PROCESS_FAILED', 'Owned process could not start.')));

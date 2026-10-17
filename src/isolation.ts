@@ -1,44 +1,131 @@
+import { constants } from 'node:fs';
+import { diagnostic, startupCollector, validateProof } from './isolation-diagnostics';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, realpath, readlink, access } from 'node:fs/promises';
 import { spawnOwned, stopOwned, waitFor } from './processes';
 import { Scratch, validateScratch, markScratchBusy, markScratchIdle } from './scratch';
 import { RunnerError } from './errors';
 export const BWRAP = '/usr/bin/bwrap';
-export function sandboxArgs(directory: string, runnerRoot: string) {
-    return ['--unshare-all', '--die-with-parent', '--new-session',
-        '--ro-bind', '/', '/', '--tmpfs', '/home', '--tmpfs', '/root', '--tmpfs', '/tmp',
-        '--tmpfs', '/run', '--proc', '/proc', '--dev', '/dev', '--bind', directory, '/scratch',
-        '--ro-bind', runnerRoot, '/runner', '--clearenv',
-        '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'HOME', '/scratch/home',
+export function sandboxArgs(directory: string, runnerDist: string, nodeExecutable: string) {
+    // Bubblewrap starts with an empty root. Never expose the host root/home/run.
+    return ['--unshare-all', '--die-with-parent', '--new-session', '--cap-drop', 'ALL',
+        '--ro-bind', '/usr', '/usr', '--ro-bind', '/bin', '/bin', '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64',
+        '--dir', '/etc', '--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache',
+        '--ro-bind', path.join(directory, 'hosts'), '/etc/hosts',
+        '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/run', '--dir', '/home', '--dir', '/root',
+        '--bind', directory, '/scratch', '--ro-bind', runnerDist, '/runner', '--ro-bind', nodeExecutable, '/runtime/node',
+        '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'HOME', '/scratch/home',
         '--setenv', 'XDG_CONFIG_HOME', '/scratch/config', '--setenv', 'XDG_CACHE_HOME', '/scratch/cache',
-        '--setenv', 'XDG_DATA_HOME', '/scratch/data', '--setenv', 'TMPDIR', '/scratch/tmp',
-        '--chdir', '/scratch'];
+        '--setenv', 'XDG_DATA_HOME', '/scratch/data', '--setenv', 'TMPDIR', '/scratch/tmp', '--chdir', '/scratch', '--dir', '/target', '--dir', '/electron', '--remount-ro', '/'];
 }
-export async function isolationPreflight(scratch: Scratch, runnerRoot: string) {
+export async function initializeIsolation(scratch: Scratch) {
     const directory = await validateScratch(scratch);
-    for (const child of ['home', 'config', 'cache', 'data', 'tmp'])
-        await mkdir(path.join(directory, child), { mode: 0o700 });
-    // Fail closed on missing bwrap, network setup errors, or ineffective mounts.
-    // The shell receives a fixed script; no scenario/config string interpolation.
-    const args = [...sandboxArgs(directory, runnerRoot), '--', '/bin/sh', '-c',
-        'set -eu; test "$HOME" = /scratch/home; test -z "$(ls -A /home)"; test -z "$(ls -A /root)"; if touch /runner/.isolation-write-probe 2>/dev/null; then exit 9; fi; if touch /etc/.pl-runner-write-probe 2>/dev/null; then exit 10; fi; printf isolated > /scratch/probe-result'];
-    await writeFile(path.join(directory, 'probe-result'), 'pending', { flag: 'wx', mode: 0o600 });
-    let child;
     try {
-        child = await spawnOwned(BWRAP, args, { cwd: runnerRoot, env: { PATH: '/usr/bin:/bin' } });
-        markScratchBusy(scratch);
-        await waitFor(async () => child!.child.exitCode !== null || child!.child.signalCode !== null, 3000);
-        if (child.child.exitCode !== 0 || await readFile(path.join(directory, 'probe-result'), 'utf8') !== 'isolated')
-            throw new Error();
-        return { status: 'PREFLIGHT_VERIFIED' as const, mechanism: 'bubblewrap', reviewed: false as const };
+        for (const child of ['home', 'config', 'cache', 'data', 'tmp'])
+            await mkdir(path.join(directory, child), { mode: 0o700, recursive: true });
+        await writeFile(path.join(directory, 'hosts'), '127.0.0.1 localhost\n::1 localhost\n', { mode: 0o600 });
     }
     catch {
-        throw new RunnerError('ISOLATION_BLOCKED', 'Unprivileged filesystem and network isolation could not be demonstrated. No target was launched.');
+        throw new RunnerError('ISOLATION_BLOCKED', 'Scratch isolation setup failed.', diagnostic('FILESYSTEM_CONTAINMENT', 'SCRATCH_PREPARATION_FAILED'));
+    }
+    const namespaces: Record<string, string> = {};
+    try {
+        for (const name of ['pid', 'net', 'mnt', 'user', 'ipc'])
+            namespaces[name] = await readlink(`/proc/self/ns/${name}`);
+    }
+    catch {
+        throw new RunnerError('ISOLATION_BLOCKED', 'Caller namespaces could not be inspected.', diagnostic('NAMESPACE_CREATION', 'NAMESPACE_INSPECTION_FAILED'));
+    }
+    try {
+        await writeFile(path.join(directory, 'expected-namespaces.json'), JSON.stringify({ version: 1, runId: scratch.nonce, namespaces }), { mode: 0o600 });
+    }
+    catch {
+        throw new RunnerError('ISOLATION_BLOCKED', 'Proof input could not be written.', diagnostic('PROOF_VALIDATION', 'PROOF_WRITE_FAILED'));
+    }
+    return directory;
+}
+export async function isolationPreflight(scratch: Scratch, runnerRoot: string) {
+    const directory = await initializeIsolation(scratch);
+    let nodeExecutable: string;
+    try {
+        nodeExecutable = await realpath(process.execPath);
+    }
+    catch {
+        throw new RunnerError('ISOLATION_BLOCKED', 'Proof runtime unavailable.', diagnostic('BINARY_LIBRARY_AVAILABILITY', 'RUNTIME_BINARY_UNAVAILABLE'));
+    }
+    const blocked = (details: ReturnType<typeof diagnostic>) => new RunnerError('ISOLATION_BLOCKED', 'Isolation preflight blocked; no target was launched.', details);
+    try {
+        await access(BWRAP, constants.X_OK);
+    }
+    catch {
+        throw blocked(diagnostic('BINARY_LIBRARY_AVAILABILITY', 'BWRAP_UNAVAILABLE'));
+    }
+    try {
+        await access(nodeExecutable, constants.X_OK);
+        for (const file of ['isolation-proof.js', 'isolation-diagnostics.js', 'errors.js'])
+            await access(path.join(runnerRoot, 'dist', file), constants.R_OK);
+    }
+    catch {
+        throw blocked(diagnostic('BINARY_LIBRARY_AVAILABILITY', 'RUNTIME_BINARY_UNAVAILABLE'));
+    }
+    try {
+        for (const source of ['/usr', '/bin', '/lib', '/lib64', '/etc/ld.so.cache', path.join(directory, 'hosts')])
+            await access(source, constants.R_OK);
+    }
+    catch {
+        throw blocked(diagnostic('MOUNT_SETUP', 'MOUNT_SOURCE_UNAVAILABLE'));
+    }
+    const args = [...sandboxArgs(directory, path.join(runnerRoot, 'dist'), nodeExecutable), '--', '/runtime/node', '/runner/isolation-proof.js'];
+    const stderr = startupCollector();
+    let child;
+    try {
+        child = await spawnOwned(BWRAP, args, { cwd: runnerRoot, env: { PATH: '/usr/bin:/bin' }, stderrSink: chunk => stderr.accept(chunk) });
+        markScratchBusy(scratch);
+        try {
+            await waitFor(async () => child!.child.exitCode !== null || child!.child.signalCode !== null, 5000);
+        }
+        catch {
+            throw blocked(diagnostic('PROOF_VALIDATION', 'PROOF_TIMEOUT'));
+        }
+        // Wait for the trusted stderr stream to drain before classifying it.
+        try {
+            await waitFor(async () => child!.child.stderr?.readableEnded ?? true, 1000);
+        }
+        catch {
+            throw blocked(diagnostic('PROOF_VALIDATION', 'PROOF_TIMEOUT'));
+        }
+        let report;
+        try {
+            report = JSON.parse(await readFile(path.join(directory, 'isolation-proof.json'), 'utf8'));
+        }
+        catch (error) {
+            const native = stderr.result();
+            if (native.reasonCode !== 'SANDBOX_STARTUP_UNCLASSIFIED')
+                throw blocked(native);
+            throw blocked(diagnostic('PROOF_VALIDATION', (error as NodeJS.ErrnoException).code === 'ENOENT'
+                ? (child.child.exitCode === 0 ? 'PROOF_MISSING' : 'SANDBOX_STARTUP_UNCLASSIFIED') : 'PROOF_MALFORMED'));
+        }
+        const validated = validateProof(report, scratch.nonce, child.child.exitCode);
+        if (validated.diagnostic)
+            throw blocked(validated.diagnostic);
+        return { status: 'PREFLIGHT_VERIFIED' as const, mechanism: 'bubblewrap', reviewed: false as const, checks: validated.checks };
+    }
+    catch (error) {
+        if (error instanceof RunnerError && error.diagnostic)
+            throw error;
+        if (error instanceof RunnerError && error.code === 'PROCESS_FAILED')
+            throw blocked(diagnostic('BINARY_LIBRARY_AVAILABILITY', 'SANDBOX_PROCESS_UNAVAILABLE'));
+        throw blocked(stderr.result());
     }
     finally {
-        if (child) {
-            await stopOwned(child);
-            markScratchIdle(scratch);
+        try {
+            if (child) {
+                await stopOwned(child);
+                markScratchIdle(scratch);
+            }
         }
+        finally {
+            stderr.result();
+        } // discard bounded raw text even after failed shutdown
     }
 }

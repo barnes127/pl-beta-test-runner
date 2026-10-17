@@ -1,10 +1,21 @@
 import { lstat, realpath, mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { RunnerError } from './errors';
 const active = new Set<string>();
-export function markScratchBusy(scratch: Scratch) { active.add(scratch.directory); }
-export function markScratchIdle(scratch: Scratch) { active.delete(scratch.directory); }
+export function markScratchBusy(scratch: Scratch) {
+    writeFileSync(path.join(scratch.directory, '.active-process.json'), JSON.stringify({ nonce: scratch.nonce, owner: process.pid }), { flag: 'wx', mode: 0o600 });
+    active.add(scratch.directory);
+}
+export function markScratchIdle(scratch: Scratch) {
+    const file = path.join(scratch.directory, '.active-process.json');
+    const lease = JSON.parse(readFileSync(file, 'utf8'));
+    if (!active.has(scratch.directory) || lease.nonce !== scratch.nonce || lease.owner !== process.pid)
+        throw new RunnerError('OWNERSHIP', 'Active process lease cannot be released.');
+    unlinkSync(file);
+    active.delete(scratch.directory);
+}
 const MARKER = '.pl-beta-runner-owner.json';
 const ROOT_MARKER = '.pl-beta-runner-root.json';
 export interface Scratch {
@@ -82,6 +93,14 @@ export async function cleanupScratch(scratch: Scratch) {
     if (active.has(scratch.directory))
         throw new RunnerError('OWNERSHIP', 'Scratch still has an active or unconfirmed process; cleanup refused.');
     await validateScratch(scratch);
+    try {
+        await lstat(path.join(scratch.directory, '.active-process.json'));
+        throw new RunnerError('OWNERSHIP', 'Persistent process lease prevents cleanup; shutdown requires review.');
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+            throw error;
+    }
     // rm removes nested symlinks themselves; never traverse them. Caller must stop
     // all owned writers first. Same-UID hostile concurrent mutation is not supported.
     await rm(scratch.directory, { recursive: true, force: false });

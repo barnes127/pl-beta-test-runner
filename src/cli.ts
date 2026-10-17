@@ -1,3 +1,4 @@
+import { environmentReport } from './environment';
 import path from 'node:path';
 import { assertRuntime, loadConfig } from './config';
 import { publicError, RunnerError } from './errors';
@@ -10,9 +11,11 @@ async function main() {
     const [command, ...args] = process.argv.slice(2);
     const root = path.resolve(__dirname, '..');
     if (command === 'help' && args.length === 0)
-        return { commands: ['doctor', 'isolation-check', 'launch', 'list', 'run'], usage: 'pnpm qa <command> [--config <file>]' };
+        return { commands: ['environment', 'doctor', 'isolation-check', 'launch', 'list', 'run'], usage: 'pnpm qa <command> [--config <file>]' };
     if (args.length && (args.length !== 2 || args[0] !== '--config' || !args[1]))
         throw new RunnerError('CONFIG', 'Expected --config <file>; shell commands and extra arguments are unsupported.');
+    if (command === 'environment' && args.length === 0)
+        return environmentReport();
     if (command === 'list')
         return { status: 'PLANNED', scenarios: [], guiMutations: 'DISABLED', note: 'Batch 2 scenarios are not implemented.' };
     if (command === 'run')

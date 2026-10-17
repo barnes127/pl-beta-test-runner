@@ -51,6 +51,8 @@ export async function prepareRuntime(config: TargetConfig, scratch: Scratch) {
     if (after.sourceDigest !== build.sourceDigest || after.assetDigest !== build.assetDigest || after.desktopDigest !== build.desktopDigest)
         throw new RunnerError('UNSAFE_PATH', 'Build inputs changed during staging.');
     const snapshotDigest = await runtimeTreeDigest(target);
+    await mkdir(path.join(run, 'inputs'), { recursive: true, mode: 0o700 });
+    await writeFile(path.join(run, 'inputs', 'preload-contract.json'), JSON.stringify({ version: 1, runId: scratch.nonce, snapshotDigest }), { flag: 'wx', mode: 0o600 });
     await writeFile(path.join(run, 'build-evidence.json'), JSON.stringify({ ...build, snapshotDigest }), { flag: 'wx', mode: 0o600 });
     return target;
 }

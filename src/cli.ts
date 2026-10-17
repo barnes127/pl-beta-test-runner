@@ -5,6 +5,8 @@ import { publicError, RunnerError } from './errors';
 import { doctor } from './doctor';
 import { initializeScratchRoot, createScratch, cleanupScratch } from './scratch';
 import { isolationPreflight } from './isolation';
+import { assertApprovedLaunchTarget } from './launch-authorization';
+import { launch } from './launch';
 async function main() {
     assertRuntime(process.versions.node, process.env.npm_config_user_agent);
     const [command, ...args] = process.argv.slice(2);
@@ -30,9 +32,11 @@ async function main() {
     }
     if (command !== 'doctor' && command !== 'launch')
         throw new RunnerError('CONFIG', 'Unknown command; use help.');
-    if (command === 'launch')
-        throw new RunnerError('LAUNCH_BLOCKED', 'First live Electron launch awaits separate owner approval after static review.');
     const config = await loadConfig(args[1] ?? path.join(root, 'config/example.target.json'));
+    if (command === 'launch') {
+        await assertApprovedLaunchTarget(config.targetRoot, root);
+        return launch(config, root);
+    }
     const result = await doctor(config);
     // Do not expose local executable paths or other sensitive machine metadata.
     return { status: result.status, targetMode: result.targetMode, isolation: result.isolation, guiMutations: result.guiMutations, build: result.build };

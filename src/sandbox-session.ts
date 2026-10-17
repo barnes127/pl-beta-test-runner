@@ -99,7 +99,7 @@ export async function session() {
             }
             if (state.status === 'BLOCKED')
                 throw lifecycleError(sanitizeLifecycle(state.diagnostic).reasonCode);
-            if (state.status !== 'READY' || state.securityVerified !== true || state.preloadVerified !== true || state.electron !== '41.10.6')
+            if (state.status !== 'READY' || state.securityVerified !== true || state.preloadVerified !== true || state.preloadDeclaredVerified !== true || state.preloadBridgeVerified !== true || !['PRESENT', 'OMITTED_DECLARATION_VERIFIED'].includes(state.preloadInspection) || state.electron !== '41.10.6')
                 return false;
             try {
                 await assertListenerOwner(38741, electron!.pid, electron!.start);

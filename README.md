@@ -48,9 +48,10 @@ before the proof executable runs leaves other stages unverified. Unknown startup
 errors remain `SANDBOX_STARTUP_UNCLASSIFIED`; they are never guessed or printed.
 The binary stage covers the proof's Node loader, not Electron or Xvfb compatibility.
 
-**`pnpm qa launch` is gated pending separate owner approval after the static
-review.** Internal boot-and-stop integration also requires doctor and isolation
-preflight to succeed. It stages desktop JS/JSON and built renderer assets
+**`pnpm qa launch` is owner-authorized for non-mutating boot/stop against only
+the canonical adjacent disposable `pl-creators-suite` checkout.** Alternate
+checkouts and symlink redirects are refused. Doctor and isolation preflight
+must succeed. It stages desktop JS/JSON and built renderer assets
 in scratch, excluding target dependency stores, Git metadata, hidden inputs and
 symlinks. It uses the existing Electron distribution read-only and a **private
 Xvfb display**; it never attaches to host X11/Wayland or an existing Suite.
@@ -71,13 +72,12 @@ raw stdout/stderr, window URLs or RPC tokens are retained. Trusted isolation
 preflight stderr is classified in bounded memory only; raw text is discarded. A process lease left
 by an unconfirmed shutdown blocks automatic cleanup across runner restarts.
 
-**Current validation:** the owner reports 96/96 tests and all six preflight
-stages passing for the previous revision. Static corrections change the state/input
-mount layout, so host preflight must be repeated for this revision. The inspected
-renderer build is stale and is now blocked. No Electron launch has occurred.
-Review the [pre-launch checklist](docs/pre-launch-acceptance-checklist.md) and
-[handoff](docs/batch-1-handoff.md) before any separate launch approval. Packaged
-mode is unsupported.
+**Current validation:** owner reports 120/120 tests, refreshed renderer, doctor
+and all six isolation-preflight stages passing. In this execution environment,
+loopback binding is denied, doctor is blocked, and preflight retained an
+unconfirmed process lease. No Electron launch or Batch 2 scenario was run.
+See the [current handoff](docs/batch-1-handoff.md) for exact host commands and
+remaining lifecycle acceptance gates. Packaged mode is unsupported.
 
 CLI outputs JSON. Exit 0 means requested checks completed, 2 means invalid config/
 runtime, 3 means blocked safety/infrastructure, 4 means unexpected failure with

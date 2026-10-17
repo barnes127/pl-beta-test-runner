@@ -30,14 +30,14 @@ for(const [options,home,version,reason] of [
  [{isPackaged:true},'/scratch/home','41.10.6','APP_PATH_MISMATCH'],
  [{},'/home/SECRET','41.10.6','STORAGE_PATH_MISMATCH'],
  [{},'/scratch/home','40.0.0','ELECTRON_VERSION_MISMATCH'],
- [{commandLine:{hasSwitch:flag=>flag==='no-sandbox'}},'/scratch/home','41.10.6','SECURITY_PREFERENCES_INVALID']
+ [{commandLine:{hasSwitch:flag=>flag==='no-sandbox'}},'/scratch/home','41.10.6','SWITCH_NO_SANDBOX']
 ]) test('Electron contract rejects '+reason,()=>{
  const f=appFixture(options);assert.throws(()=>initializeElectronPaths(f.app,home,version,f.create),e=>{assert.equal(e.lifecycle.reasonCode,reason);assert.equal(JSON.stringify(publicError(e)).includes('SECRET'),false);return true;});
 });
 test('silent path override failure and wrong preload/security settings fail closed',()=>{
  const f=appFixture({setPath:()=>{}});assert.throws(()=>initializeElectronPaths(f.app,'/scratch/home','41.10.6',f.create),e=>e.lifecycle.reasonCode==='STORAGE_PATH_MISMATCH');
  const good={sandbox:true,contextIsolation:true,nodeIntegration:false,preload:'/target/apps/desktop/preload.js',webSecurity:true};verifyWebPreferences(good);
- for(const change of [{sandbox:false},{contextIsolation:false},{nodeIntegration:true},{webSecurity:false},{preload:'/other.js'}]) assert.throws(()=>verifyWebPreferences({...good,...change}),e=>e.lifecycle.reasonCode==='SECURITY_PREFERENCES_INVALID');
+ for(const [change,reason] of [[{sandbox:false},'PREF_SANDBOX_INVALID'],[{contextIsolation:false},'PREF_CONTEXT_ISOLATION_INVALID'],[{nodeIntegration:true},'PREF_NODE_INTEGRATION_INVALID'],[{webSecurity:false},'PREF_WEB_SECURITY_DISABLED'],[{preload:'/SECRET.js'},'PREF_PRELOAD_PATH_MISMATCH']]) assert.throws(()=>verifyWebPreferences({...good,...change}),e=>e.lifecycle.reasonCode===reason && !JSON.stringify(publicError(e)).includes('SECRET'));
 });
 test('staged inputs have no writable alias under private state',()=>{
  const args=sandboxArgs('/owned/run','/runner/dist','/node');
@@ -79,17 +79,23 @@ test('package wrapper uses directory application root and runner bootstrap witho
    assert.equal(pkg.main,'/runner/electron-entry.js');
    assert.equal(await fs.readFile(path.join(root,'apps/desktop/main.js'),'utf8'),'fixture');
    assert.ok((await fs.stat(path.join(scratch.directory,'build-evidence.json'))).isFile());
+   const manifest=JSON.parse(await fs.readFile(path.join(scratch.directory,'inputs/preload-contract.json'),'utf8'));
+   const evidence=JSON.parse(await fs.readFile(path.join(scratch.directory,'build-evidence.json'),'utf8'));
+   assert.deepEqual(manifest,{version:1,runId:scratch.nonce,snapshotDigest:evidence.snapshotDigest});
  } finally {await cleanupScratch(scratch);}
 });
-test('CLI launch refuses approval gate without loading target app',async t=>{
- const base=await reviewFixture(t);
- const output=path.join(base,'result.json');const file=await fs.open(output,'wx',0o600);
- try {
-   const child=require('node:child_process').spawn(process.execPath,['dist/cli.js','launch'],{env:{PATH:'/usr/bin:/bin'},stdio:['ignore',file.fd,'ignore']});
-   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
-   assert.equal(code,3);
- } finally {await file.close();}
- const result=JSON.parse(await fs.readFile(output,'utf8'));assert.equal(result.code,'LAUNCH_BLOCKED');assert.match(result.message,/separate owner approval/);
+test('launch approval accepts only the adjacent canonical disposable checkout',async t=>{
+ const base=await reviewFixture(t);const runner=path.join(base,'runner');const target=path.join(base,'pl-creators-suite');
+ await fs.mkdir(runner);await fs.mkdir(target);
+ const {assertApprovedLaunchTarget}=require('../dist/launch-authorization');
+ await assertApprovedLaunchTarget(target,runner);
+ for(const candidate of [runner,base,path.join(base,'missing')])
+   await assert.rejects(assertApprovedLaunchTarget(candidate,runner),e=>e.code==='LAUNCH_BLOCKED');
+ const alias=path.join(base,'alias');await fs.symlink(target,alias);
+ await assert.rejects(assertApprovedLaunchTarget(alias,runner),e=>e.code==='LAUNCH_BLOCKED');
+ await fs.rmdir(target);await fs.symlink(runner,target);
+ await assert.rejects(assertApprovedLaunchTarget(runner,runner),e=>e.code==='LAUNCH_BLOCKED');
+ await assert.rejects(assertApprovedLaunchTarget(target,runner),e=>e.code==='LAUNCH_BLOCKED');
 });
 async function sessionFixture(options,callback) {
  const proc=require('../dist/processes');const proof=require('../dist/isolation-proof');
@@ -97,7 +103,7 @@ async function sessionFixture(options,callback) {
  const mocks=[
  mock.method(proof,'proveInsideSandbox',async()=>[]),mock.method(proof,'verifyApplicationMounts',()=>{}),
  mock.method(fs,'access',async()=>{}),
- mock.method(fs,'readFile',async file=>file.endsWith('expected-namespaces.json')?JSON.stringify({runId:'fixture'}):JSON.stringify({status:'READY',securityVerified:true,preloadVerified:true,electron:'41.10.6'})),
+ mock.method(fs,'readFile',async file=>file.endsWith('expected-namespaces.json')?JSON.stringify({runId:'fixture'}):JSON.stringify({status:'READY',securityVerified:true,preloadVerified:true,preloadDeclaredVerified:true,preloadBridgeVerified:true,preloadInspection:'PRESENT',electron:'41.10.6',...options.readiness})),
  mock.method(fs,'writeFile',async(file,data)=>{
    if(file==='/scratch/stop-electron') {if(options.stopRequestFails) throw new Error('SECRET');if(!options.hangElectron) children[2].child.exitCode=options.exitFailure?2:0;}
    if(file==='/scratch/session-result.json') status=JSON.parse(data);
@@ -181,4 +187,109 @@ test('missing or failing internal preference inspector blocks rather than assumi
  const {inspectWebPreferences}=require('../dist/electron-contract');
  for(const contents of [{},{getLastWebPreferences:()=>{throw new Error('SECRET');}},{getLastWebPreferences:()=>null}]) assert.throws(()=>inspectWebPreferences(contents),error=>{assert.equal(error.lifecycle.reasonCode,'PREFERENCE_INSPECTION_UNAVAILABLE');assert.equal(JSON.stringify(publicError(error)).includes('SECRET'),false);return true;});
  inspectWebPreferences({getLastWebPreferences:()=>({sandbox:true,contextIsolation:true,nodeIntegration:false,preload:'/target/apps/desktop/preload.js'})});
+});
+
+test('security diagnostics distinguish every prohibited switch without echoing input',()=>{
+ for(const [flag,reason] of [['no-sandbox','SWITCH_NO_SANDBOX'],['disable-web-security','SWITCH_DISABLE_WEB_SECURITY'],['disable-gpu-sandbox','SWITCH_DISABLE_GPU_SANDBOX'],['disable-setuid-sandbox','SWITCH_DISABLE_SETUID_SANDBOX']]) {
+  const f=appFixture({commandLine:{hasSwitch:value=>value===flag}});
+  assert.throws(()=>initializeElectronPaths(f.app,'/scratch/home','41.10.6',f.create),e=>e.lifecycle.reasonCode===reason);
+ }
+});
+test('missing preferences and noncanonical preload representations remain rejected with specific codes',()=>{
+ const good={sandbox:true,contextIsolation:true,nodeIntegration:false,preload:'/target/apps/desktop/preload.js'};
+ for(const [change,reason] of [[{sandbox:undefined},'PREF_SANDBOX_MISSING'],[{contextIsolation:undefined},'PREF_CONTEXT_ISOLATION_MISSING'],[{nodeIntegration:undefined},'PREF_NODE_INTEGRATION_MISSING'],[{preload:undefined},'PREF_PRELOAD_MISSING'],[{preload:{}},'PREF_PRELOAD_TYPE_INVALID'],[{preload:'file:///target/apps/desktop/preload.js'},'PREF_PRELOAD_PATH_MISMATCH'],[{preload:'/target/apps/desktop/../desktop/preload.js'},'PREF_PRELOAD_PATH_MISMATCH']]) {
+  assert.throws(()=>verifyWebPreferences({...good,...change}),e=>e.lifecycle.reasonCode===reason);
+ }
+});
+test('readiness identifies the sole actual Suite BrowserWindow and fixed origin without exposing query secrets',()=>{
+ const {verifySuiteWindow}=require('../dist/electron-contract');
+ const contents={getType:()=> 'window',getURL:()=> 'http://localhost:5173/?rpcToken=SECRET'};
+ const win={webContents:contents,isDestroyed:()=>false};
+ const windows={fromWebContents:()=>win,getAllWindows:()=>[win]};
+ verifySuiteWindow(contents,windows);
+ for(const modified of [{...windows,fromWebContents:()=>null},{...windows,getAllWindows:()=>[win,{}]}]) assert.throws(()=>verifySuiteWindow(contents,modified),e=>e.lifecycle.reasonCode==='SUITE_WINDOW_IDENTITY_INVALID');
+ for(const url of ['http://localhost:5174/?SECRET','http://localhost:5173/other?SECRET','file:///SECRET','INVALID_SECRET']) {
+  assert.throws(()=>verifySuiteWindow({...contents,getURL:()=>url},{...windows,fromWebContents:()=>null}),e=>!JSON.stringify(publicError(e)).includes('SECRET'));
+  contents.getURL=()=>url;
+  assert.throws(()=>verifySuiteWindow(contents,windows),e=>e.lifecycle.reasonCode==='SUITE_WINDOW_LOCATION_INVALID' && !JSON.stringify(publicError(e)).includes('SECRET'));
+ }
+ contents.getType=()=> 'webview';
+ assert.throws(()=>verifySuiteWindow(contents,windows),e=>e.lifecycle.reasonCode==='SUITE_WINDOW_IDENTITY_INVALID');
+});
+test('specific security failures survive session and public sanitization without extra metadata',()=>{
+ const {lifecycleReasons}=require('../dist/lifecycle-diagnostics');
+ for(const reasonCode of lifecycleReasons.filter(code=>/^(SWITCH_|PREF_|PRELOAD_|SUITE_WINDOW_)/.test(code))) {
+  const result=validateSessionResult({version:1,runId:'fixture',status:'BLOCKED',shutdownComplete:true,guiMutations:false,diagnostic:{reasonCode,path:'SECRET',token:'SECRET'}},'fixture',3);
+  assert.deepEqual(result.diagnostic,{reasonCode});
+  const error=require('../dist/errors').lifecycleError(reasonCode);
+  assert.equal(publicError(error).lifecycle.reasonCode,reasonCode);
+  assert.equal(JSON.stringify(result).includes('SECRET'),false);
+ }
+});
+
+async function stagedDeclarationFixture(t) {
+ const base=await reviewFixture(t);const target=path.join(base,'target');
+ await fs.mkdir(path.join(target,'apps/desktop'),{recursive:true});
+ for(const file of ['main.js','preload.js']) await fs.copyFile(path.join(__dirname,'fixtures/reviewed-desktop',file),path.join(target,'apps/desktop',file));
+ await fs.writeFile(path.join(target,'asset.js'),'fixture');
+ const manifest=path.join(base,'preload-contract.json');
+ const refresh=async()=>fs.writeFile(manifest,JSON.stringify({version:1,runId:'fixture',snapshotDigest:await require('../dist/runtime-files').runtimeTreeDigest(target)}));
+ await refresh();return {target,manifest,refresh};
+}
+test('real Electron export descriptor prevents replacement but snapshot verification requires no interception',async t=>{
+ // Descriptor shape extracted read-only from Electron 41's embedded
+ // lib/common/define-properties.ts: enumerable getter, no configurable/setter.
+ const Original=class {};const electron={};
+ Object.defineProperties(electron,{BrowserWindow:{enumerable:true,get:()=>Original}});
+ const before=Object.getOwnPropertyDescriptor(electron,'BrowserWindow');
+ assert.equal(before.configurable,false);assert.equal(before.set,undefined);
+ assert.throws(()=>Object.defineProperty(electron,'BrowserWindow',{configurable:true,value:new Proxy(Original,{})}),TypeError);
+ const f=await stagedDeclarationFixture(t);
+ await require('../dist/preload-contract').verifyStagedPreloadDeclaration(f.target,f.manifest,'fixture');
+ assert.deepEqual(Object.getOwnPropertyDescriptor(electron,'BrowserWindow'),before);
+ assert.equal(electron.BrowserWindow,Original);
+});
+test('reviewed exact snapshot permits omitted inspector preload only with independent declaration and observed bridge',async t=>{
+ const f=await stagedDeclarationFixture(t);
+ await require('../dist/preload-contract').verifyStagedPreloadDeclaration(f.target,f.manifest,'fixture');
+ const {inspectWebPreferences,verifyPreloadBridge}=require('../dist/electron-contract');
+ const contents={getLastWebPreferences:()=>({sandbox:true,contextIsolation:true,nodeIntegration:false,webSecurity:true})};
+ assert.equal(inspectWebPreferences(contents,true),'OMITTED_DECLARATION_VERIFIED');verifyPreloadBridge(true);
+ assert.throws(()=>inspectWebPreferences(contents),e=>e.lifecycle.reasonCode==='PREF_PRELOAD_MISSING');
+ for(const absent of [false,undefined,null,'true']) assert.throws(()=>verifyPreloadBridge(absent),e=>e.lifecycle.reasonCode==='PRELOAD_BRIDGE_MISSING');
+});
+test('changed or removed preload declaration cannot pass even with a refreshed snapshot manifest',async t=>{
+ const f=await stagedDeclarationFixture(t);const main=path.join(f.target,'apps/desktop/main.js');const original=await fs.readFile(main,'utf8');
+ const verify=()=>require('../dist/preload-contract').verifyStagedPreloadDeclaration(f.target,f.manifest,'fixture');
+ for(const changed of [original.replace('preload.js','incorrect.js'),original.replace('preload: path.join(__dirname, "preload.js"),',''),original.replace('sandbox: true','sandbox: false')]) {
+  assert.notEqual(changed,original);await fs.writeFile(main,changed);await f.refresh();
+  await assert.rejects(verify(),e=>e.lifecycle.reasonCode==='PRELOAD_REVIEW_MISMATCH');
+ }
+ await fs.writeFile(main,original);await fs.writeFile(path.join(f.target,'apps/desktop/preload.js'),'SECRET');await f.refresh();
+ await assert.rejects(verify(),e=>e.lifecycle.reasonCode==='PRELOAD_REVIEW_MISMATCH' && !JSON.stringify(publicError(e)).includes('SECRET'));
+});
+test('snapshot nonce, tree changes, missing files and symlink escapes fail closed',async t=>{
+ const f=await stagedDeclarationFixture(t);const verify=runId=>require('../dist/preload-contract').verifyStagedPreloadDeclaration(f.target,f.manifest,runId);
+ await assert.rejects(verify('wrong'),e=>e.lifecycle.reasonCode==='PRELOAD_SNAPSHOT_INVALID');
+ await fs.writeFile(path.join(f.target,'asset.js'),'changed');
+ await assert.rejects(verify('fixture'),e=>e.lifecycle.reasonCode==='PRELOAD_SNAPSHOT_INVALID');
+ await f.refresh();await verify('fixture');
+ const preload=path.join(f.target,'apps/desktop/preload.js');await fs.unlink(preload);
+ await assert.rejects(verify('fixture'),e=>e.lifecycle.reasonCode==='PRELOAD_FILE_INVALID');
+ await fs.symlink(path.join(__dirname,'fixtures/reviewed-desktop/preload.js'),preload);
+ await assert.rejects(verify('fixture'),e=>e.lifecycle.reasonCode==='PRELOAD_FILE_INVALID');
+});
+test('verified declaration never overrides contradictory inspector preload or effective security settings',()=>{
+ const {inspectWebPreferences}=require('../dist/electron-contract');
+ const good={sandbox:true,contextIsolation:true,nodeIntegration:false,webSecurity:true};
+ for(const [change,reason] of [[{preload:'/SECRET'},'PREF_PRELOAD_PATH_MISMATCH'],[{preload:{}},'PREF_PRELOAD_TYPE_INVALID'],[{sandbox:undefined},'PREF_SANDBOX_MISSING'],[{sandbox:false},'PREF_SANDBOX_INVALID'],[{contextIsolation:false},'PREF_CONTEXT_ISOLATION_INVALID'],[{nodeIntegration:true},'PREF_NODE_INTEGRATION_INVALID'],[{webSecurity:false},'PREF_WEB_SECURITY_DISABLED']]) {
+  assert.throws(()=>inspectWebPreferences({getLastWebPreferences:()=>({...good,...change})},true),e=>e.lifecycle.reasonCode===reason && !JSON.stringify(publicError(e)).includes('SECRET'));
+ }
+ assert.equal(inspectWebPreferences({getLastWebPreferences:()=>({...good,preload:'/target/apps/desktop/preload.js'})},true),'PRESENT');
+});
+test('supervisor requires separate declaration and bridge proof, including omitted-inspector case',async()=>{
+ await sessionFixture({readiness:{preloadInspection:'OMITTED_DECLARATION_VERIFIED'}},async result=>assert.equal(result.status,'LIFECYCLE_VERIFIED'));
+ for(const readiness of [{preloadDeclaredVerified:undefined},{preloadBridgeVerified:false},{preloadInspection:'UNKNOWN'}]) {
+  await sessionFixture({readiness},async result=>assert.equal(result.status,'BLOCKED'));
+ }
 });

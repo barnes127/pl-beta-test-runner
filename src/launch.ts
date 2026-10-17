@@ -8,7 +8,7 @@ import { lifecycleError, RunnerError } from './errors';
 import { prepareRuntime } from './runtime-files';
 import { spawnOwned, stopOwned, waitFor } from './processes';
 import { validateSessionResult } from './lifecycle-diagnostics';
-// Internal integration only. The CLI remains gated until separate owner approval.
+// Non-mutating lifecycle; the CLI additionally restricts the approved checkout.
 export async function launch(config: TargetConfig, runnerRoot: string) {
     validateConfig(config);
     const checked = await doctor(config);

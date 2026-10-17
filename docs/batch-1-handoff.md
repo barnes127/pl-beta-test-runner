@@ -1,4 +1,505 @@
-# Batch 1 — Final launcher static review (current)
+# Batch 1 — BrowserWindow export compatibility repair (2026-10-17)
+
+**Repair implemented and unit-tested; runtime acceptance remains BLOCKED pending
+one owner-host rerun. Batch 2 remains disabled until two complete non-mutating
+Electron lifecycles have succeeded.** Owner reports build/doctor/all six
+Bubblewrap stages PASS, followed by PRELOAD_DECLARATION_CAPTURE_UNAVAILABLE.
+No live Electron launch was attempted here. Retained scratch leases were untouched.
+Prior working-tree changes were preserved.
+
+## Exact failure diagnosis
+
+Read-only byte inspection of the installed Electron 41.10.6 executable found its
+embedded `lib/common/define-properties.ts` helper and browser module list. The
+list includes BrowserWindow; the helper builds descriptors equivalent to:
+
+```js
+{ enumerable: true, get: handleESModule(module.loader) }
+```
+
+It calls Object.defineProperties with no configurable flag and no setter. These
+are non-configurable accessor exports. The runner tried to replace BrowserWindow
+with a data property using Object.defineProperty(..., { configurable: true,
+value: wrapper }). Standard JavaScript rejects that replacement with TypeError.
+The previous catch collapsed it to PRELOAD_DECLARATION_CAPTURE_UNAVAILABLE.
+**Failure occurs during export replacement, before the Proxy can intercept a
+constructor.** Changing assignment syntax cannot fix a getter with no setter;
+replacing module caches is unnecessary and unsupported. There is no evidence
+that BrowserWindow itself cannot be constructed or that preload is disabled.
+
+This is a static diagnosis from the installed binary plus a regression reproducing
+its exact descriptor shape, not a live descriptor dump from the host. The old
+host report did not expose individual catch branches. No raw process metadata,
+application logs or secrets were read. Commands included a Python read-only
+search for the helper/browser export list, `sha256sum` for the reviewed source
+files, and inspection of complete Suite main/preload and runner staging/bootstrap.
+
+## Replacement verification contract
+
+Constructor interception is removed. No Electron export, module cache, constructor,
+BrowserWindow options or preload code is patched or injected. The original
+Electron BrowserWindow API is used unchanged.
+
+`src/preload-contract.ts` instead contains explicit SHA-256 pins for the complete
+reviewed Suite main and preload files:
+
+- main: `02f9b57581b477f48953d8610b64e82f7c60bf97201e9e4484b28cb8a62a0537`
+- preload: `0964512c1529b4c66bea67074baef277a95f902cc3fbc829c2f33970cd31e8d2`
+
+The reviewed main has the one BrowserWindow construction site, imports Electron
+normally, and declares path.join(__dirname, 'preload.js') with sandbox and context
+isolation true, Node integration false. The reviewed preload exposes plMenu
+through contextBridge. These pins are never automatically regenerated. Any source
+change, including whitespace or a changed declaration, fails closed and requires
+fresh review. Test fixtures preserve these exact reviewed public source bytes;
+they contain no real token and are never executed as applications.
+
+Staging writes a nonce-bound, versioned manifest with the complete snapshot digest
+at `inputs/preload-contract.json`, outside the target and writable state. Existing
+isolation mounts expose this directory read-only. The bootstrap checks canonical
+regular main/preload files, reviewed hashes, nonce/schema and full staged tree
+hash **before importing Suite main**, then repeats verification on readiness.
+The manifest's snapshot digest equals the existing build-evidence snapshot digest.
+No filename-only, regex-only or auto-approved declaration inference is used.
+The manifest is not a signature from the application owner; it binds the exact
+runner-staged bytes for this nonce, while independently pinned source binds the
+reviewed declaration.
+
+Runtime readiness still requires the sole actual Suite BrowserWindow through
+BrowserWindow.fromWebContents/getAllWindows, exact webContents association/type,
+and the fixed renderer origin/path. It checks effective sandbox=true,
+contextIsolation=true, nodeIntegration=false and the existing webSecurity rule;
+all forbidden-switch checks remain. The undocumented getter remains necessary
+for these effective boolean checks and still fails closed when unavailable. Only
+its missing preload property can use the independently reviewed snapshot contract.
+A present conflicting preload property still fails. Public executeJavaScript
+must separately observe the expected plMenu.onMenuAction function, and public
+preload-error events still block. Bridge presence alone never proves declaration.
+Both proof flags remain required by the supervisor. No UI action is invoked.
+
+New fixed sanitized reasons: PRELOAD_REVIEW_MISMATCH (reviewed file changed),
+PRELOAD_SNAPSHOT_INVALID (manifest/nonce/tree mismatch or unavailable evidence).
+PRELOAD_FILE_INVALID covers missing/noncanonical/nonregular files. Legacy capture
+reason codes remain accepted for old reports but no capture code emits them now.
+
+## Validation and changed files
+
+Using existing Node 22.12.0: `pnpm format`, `pnpm typecheck`, `pnpm test`
+(includes build), `pnpm format:check`, `git diff --check`: **PASS**.
+Final suite: **130 tests, 129 passed, 0 failed, 1 skipped** (real occupied-port
+test skipped because this execution environment denies TCP binding). Tests use
+fixtures/fake Electron windows; no live Electron compatibility success is claimed.
+Focused regressions cover non-configurable getter replacement failure, verification
+without export mutation, changed/removed declarations even with refreshed snapshot
+manifests, altered preload bytes, wrong nonce, tree changes, missing files,
+symlink escapes, missing bridge, conflicting effective preferences, sanitization,
+and existing actual-window/supervisor proof requirements. Staging tests verify
+manifest nonce/digest equality with build evidence.
+
+Changed this turn: `src/electron-contract.ts` (removes interception),
+`src/preload-contract.ts` (reviewed snapshot verifier), `src/runtime-files.ts`
+(read-only-input manifest generation), `src/electron-entry.ts` (async pre-import
+and readiness verification), `src/lifecycle-diagnostics.ts`,
+`tests/launcher-static.test.cjs`, `tests/fixtures/reviewed-desktop/main.js`,
+`tests/fixtures/reviewed-desktop/preload.js`, `docs/batch-1-handoff.md`.
+No Suite changes, dependency installation, host security changes, Bubblewrap
+relaxation, ownership/cleanup changes, GUI mutations, lease deletion, network
+access, commits, pushes or Batch 2 work occurred.
+
+## One host rerun after review
+
+```bash
+(
+set -euo pipefail
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+pnpm qa launch
+)
+```
+
+Share only sanitized CLI JSON; preserve any retained leases. Stop after this one
+attempt for review. Effective security, actual bridge execution, graceful exit,
+listener ownership/release, no surviving processes, final containment and repeated
+successful lifecycle acceptance remain host runtime gates. One successful rerun
+would not satisfy the requirement for two complete cycles or authorize Batch 2.
+Earlier constructor-interception entries below are historical and superseded.
+
+---
+
+# Batch 1 — Preload verification contract correction (2026-10-17)
+
+**Implemented and unit-tested; live acceptance remains BLOCKED pending one host
+rerun and owner review. Batch 2 remains disabled.** Owner reports build PASS,
+doctor CHECKS_PASSED, all six isolation stages PASS/PREFLIGHT_VERIFIED, then a
+real Electron launch failing PREF_PRELOAD_MISSING. This is evidence that the
+undocumented getter omitted that property, not proof of a disabled preload.
+No local Electron launch was attempted. All retained scratch leases were left
+untouched. Pre-existing working-tree changes were preserved.
+
+## Inspected facts and corrected contract
+
+Read-only inspection of Suite `apps/desktop/main.js` confirms its BrowserWindow
+constructor declares `path.join(__dirname, 'preload.js')`, sandbox=true,
+contextIsolation=true, nodeIntegration=false, with webSecurity left at Electron's
+default. `apps/desktop/preload.js` uses contextBridge.exposeInMainWorld to expose
+a frozen `plMenu` object with `onMenuAction`. No handler is invoked by readiness.
+
+Runner `prepareRuntime` copies desktop JS/JSON with before/after/copy digests,
+rejects symlinks, and stages main/preload under `/target/apps/desktop`. The staged
+package selects `/runner/electron-entry.js`, which imports the staged Suite main.
+The existing mount proof requires `/target` read-only without a writable alias.
+The intended canonical preload is therefore `/target/apps/desktop/preload.js`.
+No Suite source or build files were modified.
+
+Installed Electron 41.10.6 declarations document the absolute-path preload
+constructor option and the public webContents `preload-error` event. They do not
+document getLastWebPreferences or promise its preload field. The observed host
+omission means that field is not a reliable standalone preload oracle for this
+configuration. We do not infer how every Electron 41 distribution serializes it,
+and do not guess a replacement field or normalize unexpected paths.
+
+Verification now has three independent gates:
+
+1. **Declared configuration:** before importing Suite main, the bootstrap wraps
+   the exported public BrowserWindow constructor with a JavaScript Proxy. It
+   observes actual arguments, forwards them unchanged to the original constructor,
+   and records the returned webContents in a private WeakSet. It requires the
+   exact intended preload, safe declared preferences, and an existing regular
+   file whose realpath equals the intended path. It does not inject a preload or
+   fix application options. Missing/mismatched declaration and invalid file are
+   distinct failures. If export wrapping is unavailable or a window bypasses
+   capture, launch fails closed. Native constructor interception compatibility
+   remains a host runtime gate, not a unit-test claim.
+2. **Effective security:** on the sole actual Suite window, the existing guarded
+   inspector still requires sandbox=true, contextIsolation=true,
+   nodeIntegration=false and rejects webSecurity=false. Command-line bypass
+   checks and existing webSecurity default handling are unchanged. Missing or
+   failed inspector remains blocked. An absent preload property is accepted
+   **only after the captured declaration has been verified for those same
+   webContents**; a present contradictory path/type still blocks. Informational
+   internal status distinguishes PRESENT from OMITTED_DECLARATION_VERIFIED.
+3. **Observable execution:** readiness still independently evaluates
+   `typeof window.plMenu?.onMenuAction === 'function'` using public
+   webContents.executeJavaScript in the actual Suite page. Only exact boolean
+   true passes; no menu action or GUI mutation occurs. A public preload-error
+   event blocks with a fixed reason, discarding its raw path/error arguments.
+   READY requires both declaration and bridge proof, plus visible UI readiness.
+   The supervisor now explicitly requires both proof flags and a recognized
+   inspector status; it cannot accept the older single preloadVerified flag alone.
+
+The internal getter's limitation is therefore distinguished from an actually
+missing/incorrect declaration or missing bridge. The correction does not claim
+that a declaration alone proves execution, nor that bridge presence alone proves
+which file was configured.
+
+## Sanitized diagnostics
+
+New fixed reasons: PRELOAD_DECLARATION_MISSING,
+PRELOAD_DECLARATION_MISMATCH, PRELOAD_FILE_INVALID,
+PRELOAD_DECLARATION_CAPTURE_UNAVAILABLE, PRELOAD_DECLARATION_UNVERIFIED,
+PRELOAD_EXECUTION_FAILED. PRELOAD_BRIDGE_MISSING remains separate. Contradictory
+inspector values retain PREF_PRELOAD_PATH_MISMATCH/PREF_PRELOAD_TYPE_INVALID;
+PREF_PRELOAD_MISSING still applies when no independent declaration is verified.
+Sanitized constructor failures also survive asynchronous startup rejection
+handling rather than collapsing into generic startup failure. No raw path,
+URL, token, environment value, error or application output is added to evidence.
+
+## Validation and files changed this turn
+
+Commands: `pnpm format`, `pnpm typecheck`, `pnpm test` (includes TypeScript build),
+`pnpm format:check`, `git diff --check`: **PASS**, using existing Node 22.12.0.
+Final suite: **129 tests, 128 passed, 0 failed, 1 skipped**. The occupied-port
+runtime test remains skipped because this managed environment denies TCP binding.
+No dependencies installed; no extra isolation or live lifecycle probe attempted.
+
+Focused new tests use fake native constructors/windows, not Electron. They cover
+argument identity/forwarding, same-window declaration association, missing/wrong
+preload, missing file verifier failure, unavailable/replaced capture, omitted
+inspector preload with verified declaration, missing bridge, contradictory
+inspector values, unsafe security preferences, diagnostic sanitization, and
+supervisor rejection of incomplete proofs. A mocked full session accepts the
+omitted-inspector case only with both explicit proof flags. Actual native
+constructor/export wrapping, preload execution and full shutdown remain untested
+locally; no successful isolated Electron lifecycle is claimed.
+
+Files changed in this focused turn: `src/electron-contract.ts`,
+`src/electron-entry.ts`, `src/lifecycle-diagnostics.ts`, `src/sandbox-session.ts`,
+`tests/launcher-static.test.cjs`, `docs/batch-1-handoff.md`.
+No Bubblewrap/mount, process ownership, scratch cleanup or target configuration
+changes; no Suite modifications, GUI mutations, lease deletion, network access,
+host-security changes, installation, commit, push or Batch 2 implementation.
+
+## One host rerun after owner review
+
+Run in a normal Pop!_OS terminal. This stops on any failed prerequisite and
+performs exactly one non-mutating launch attempt:
+
+```bash
+(
+set -euo pipefail
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+pnpm qa launch
+)
+```
+
+Share only sanitized CLI JSON. Do not dump internal files, app output, process
+environments or token-bearing URLs, and do not delete leases to rerun. Stop for
+review after that attempt. Batch 1 still requires full lifecycle acceptance and
+repeatable cleanup before any Batch 2 authorization can take effect.
+
+Earlier entries below are historical; their preload-omission policy is superseded.
+
+---
+
+# Batch 1 — Live security-preference diagnosis (2026-10-17)
+
+**BLOCKED pending host diagnostic rerun; no Batch 2 work.** Owner reports the
+first real isolated Electron attempt reached LAUNCH_BLOCKED /
+SECURITY_PREFERENCES_INVALID after 120 tests, doctor and six preflight stages
+passed. That shared code cannot identify the failed assertion retrospectively.
+No local live launch was attempted during this focused change. Retained scratch
+leases were not read, deleted, overridden or reused. Prior working-tree changes
+from the preceding turn were preserved.
+
+## Exact assertion trace and focused change
+
+`src/electron-contract.ts::initializeElectronPaths` previously emitted the same
+code for four command-line switches. Each now has a fixed allowlisted reason:
+
+| Rejected switch | Diagnostic |
+| --- | --- |
+| no-sandbox | SWITCH_NO_SANDBOX |
+| disable-web-security | SWITCH_DISABLE_WEB_SECURITY |
+| disable-gpu-sandbox | SWITCH_DISABLE_GPU_SANDBOX |
+| disable-setuid-sandbox | SWITCH_DISABLE_SETUID_SANDBOX |
+
+`verifyWebPreferences`, called by `inspectWebPreferences` from the bootstrap's
+`did-finish-load`, previously combined these assertions into that same code:
+
+| Assertion | Diagnostic |
+| --- | --- |
+| sandbox must equal true | PREF_SANDBOX_MISSING or PREF_SANDBOX_INVALID |
+| contextIsolation must equal true | PREF_CONTEXT_ISOLATION_MISSING or PREF_CONTEXT_ISOLATION_INVALID |
+| nodeIntegration must equal false | PREF_NODE_INTEGRATION_MISSING or PREF_NODE_INTEGRATION_INVALID |
+| webSecurity must not equal false | PREF_WEB_SECURITY_DISABLED |
+| preload must equal the staged absolute script path | PREF_PRELOAD_MISSING, PREF_PRELOAD_TYPE_INVALID or PREF_PRELOAD_PATH_MISMATCH |
+
+The original predicates and order are preserved. In particular, the existing
+webSecurity default handling is unchanged. Missing sandbox/contextIsolation/
+nodeIntegration values are never inferred safe. Missing/failing native inspection
+still gives PREFERENCE_INSPECTION_UNAVAILABLE. The legacy generic reason remains
+allowlisted for older reports; these assertions no longer emit it.
+
+The bootstrap now verifies BrowserWindow.fromWebContents identity, exact
+webContents association, sole non-destroyed BrowserWindow, webContents type
+`window`, and the known renderer origin/root path before inspecting preferences.
+Failures are SUITE_WINDOW_IDENTITY_INVALID or SUITE_WINDOW_LOCATION_INVALID.
+Actual Suite `main.js` creates one BrowserWindow and loads localhost:5173 with
+RPC query parameters. Those parameters are ignored for location identity and
+never logged. No title/URL/path/preference dump or raw application output is
+recorded. This identity logic is **unit verified, not yet runtime verified**.
+
+## Electron 41 evidence and limits
+
+Read-only inspection of the installed Electron declaration file confirms preload
+is specified as an absolute file-path string; sandbox defaults true since
+Electron 20. Actual Suite source explicitly sets sandbox/contextIsolation true,
+nodeIntegration false, and preload via path.join(__dirname, 'preload.js'). It
+omits webSecurity. Its staged entry point implies the existing expected absolute
+preload path. getLastWebPreferences remains an undocumented guarded native getter.
+The declarations do **not** establish how that getter serializes preload at
+runtime. No independently justified path-normalization correction was found.
+File URLs, objects, alternate paths and lexical aliases therefore remain rejected.
+**Whether Electron 41 normalizes this getter's output, and which assertion
+actually failed, remain unverified until the host rerun.** No sandbox/security
+switch or containment boundary was relaxed to accommodate a hypothesis.
+
+## Validation and changed files for this focused turn
+
+- `pnpm format`, `pnpm typecheck`, `pnpm test` (includes build),
+  `pnpm format:check`, `git diff --check`: PASS. Final suite: 124 tests,
+  **123 passed, 0 failed, 1 skipped**. The real occupied-port test is skipped
+  because the managed execution environment forbids TCP binding; simulated
+  conflict tests still ran.
+- Focused tests cover all four switches, each unsafe/missing preference,
+  unsupported preload representations, actual-window association, ambiguous
+  windows, incorrect origin/path, secret-bearing query suppression, and diagnostic
+  propagation through session/public sanitizers. All use fakes, not Electron.
+- Files changed this turn: `src/electron-contract.ts`, `src/electron-entry.ts`,
+  `src/lifecycle-diagnostics.ts`, `tests/launcher-static.test.cjs`, this handoff.
+- No Suite writes, installations, host security changes, raw evidence capture,
+  external network access, GUI mutations, lease deletion, commits or pushes.
+
+## Host rerun and remaining gate
+
+In a normal terminal, after owner review:
+
+```bash
+(
+set -euo pipefail
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+pnpm qa launch
+)
+```
+
+Share only the sanitized CLI JSON. Do not print raw electron-status files,
+URLs, process environments, application logs or token-bearing data. Do not
+remove leases to rerun. A more specific failure is diagnostic progress, not
+acceptance. Batch 1 still requires two successful full lifecycles, security and
+preload readiness, owned listeners, graceful shutdown, clean process/port
+release, final containment and unchanged input evidence. Stop after this focused
+rerun for review; Batch 2 remains disabled.
+
+---
+
+# Batch 1 — Authorized runtime acceptance attempt (2026-10-17)
+
+**Acceptance BLOCKED in the Codex execution environment. Batch 2 NOT STARTED.**
+The owner authorized two non-mutating isolated Electron boot/stop cycles against
+only `~/Projects/pl-creators-suite`. That authorization is now implemented at
+the CLI boundary; alternate target paths and symlink redirects are refused.
+`run` remains blocked, `allowGuiMutations` remains false, and configuration still
+explicitly says unverified. No Electron launch was attempted after infrastructure
+checks failed. No Suite changes, dependency installations, host-security changes,
+commits, pushes, GUI mutations or external network access occurred.
+
+## Evidence and commands executed
+
+Owner-supplied host evidence: Node 22.12.0 / pnpm 10.31.0; 120/120 tests;
+refreshed renderer; doctor CHECKS_PASSED; isolation-check PREFLIGHT_VERIFIED with
+all six stages passing; Xvfb available. These reports establish host preflight,
+not an accepted live Electron lifecycle.
+
+Local commands used Node 22.12.0 through its existing nvm binary directory on PATH:
+
+- `pnpm qa environment`: DIAGNOSTIC_ONLY, TCP DENIED_EPERM, seccompMode=2,
+  noNewPrivileges=1. No target launched.
+- `pnpm qa isolation-check`: exit 3, OWNERSHIP, “Scratch still has an active or
+  unconfirmed process; cleanup refused.” The final cleanup refusal masks the
+  earlier startup diagnostic, so **no specific Bubblewrap-stage failure is
+  asserted for this attempt**. Retained `.scratch/run-R8Cads` and its process lease
+  were not removed, overridden or reused. Unconfirmed ownership is not evidence
+  of a live remaining process. Its disposition requires separate investigation.
+- `pnpm qa doctor`: exit 3, PORT_UNAVAILABLE, required listener port cannot be
+  checked in this environment. This independently prevents Electron startup.
+- `pnpm format`, `pnpm typecheck`, `pnpm test`, `pnpm format:check`: PASS.
+  Test command builds TypeScript first. 120 tests: **119 passed, 0 failed,
+  1 skipped** (real occupied-port test requires TCP binding). Conflict/ownership
+  simulations still ran. Electron session tests are mocks, not runtime proof.
+- Read-only review of AGENTS.md, blueprint, Batch 0 discovery, prior Batch 1
+  handoff/checklist, CLI, launcher, isolation, process ownership and runtime-file
+  contracts; `git status --short` and `git diff` review.
+
+No host-user profile/project inventory was taken. Source/profile unchanged
+claims for a complete live lifecycle remain **unverified**, because none ran.
+The runner's unchanged isolation model still requires empty root, private
+namespaces/network/HOME/XDG/TMP, private Xvfb, read-only inputs, sandboxed
+Electron, strict ownership and final containment checks. These requirements
+were not relaxed to work around execution restrictions.
+
+## Files changed
+
+- `src/launch-authorization.ts`: narrow canonical adjacent-checkout authorization.
+- `src/cli.ts`: replaces obsolete approval refusal with authorization check and
+  the existing non-mutating isolated lifecycle.
+- `src/launch.ts`: updates obsolete CLI-gate comment; lifecycle unchanged.
+- `tests/launcher-static.test.cjs`: replaces obsolete refusal assertion with
+  positive canonical-path and negative alternate/missing/symlink-target tests.
+- `README.md`, `docs/batch-1-handoff.md`,
+  `docs/pre-launch-acceptance-checklist.md`, `docs/batch-2-handoff.md`: status,
+  authorization, host procedure and remaining gates. No target config changes.
+
+## Exact host procedure
+
+Run in a normal Pop!_OS terminal, with no other Suite/dev instance running.
+These commands do not install or rebuild anything in the Suite checkout. Execute
+as one subshell so any failed prerequisite stops the procedure. Do not delete a
+retained process lease to obtain a pass. Each launch performs its own doctor and
+full preflight before Electron, then bounded readiness and shutdown checks.
+
+```bash
+(
+set -euo pipefail
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm --version
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+node <<'NODE'
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const {loadConfig} = require('./dist/config');
+const {assertApprovedLaunchTarget} = require('./dist/launch-authorization');
+const {inspectRendererBuild} = require('./dist/runtime-files');
+const {launch} = require('./dist/launch');
+const {publicError} = require('./dist/errors');
+(async () => {
+  const root = process.cwd();
+  const config = await loadConfig(path.join(root, 'config/example.target.json'));
+  await assertApprovedLaunchTarget(config.targetRoot, root);
+  const before = await inspectRendererBuild(config.targetRoot);
+  for (let cycle = 1; cycle <= 2; cycle++) {
+    const result = await launch(config, root);
+    assert.equal(result.status, 'LIFECYCLE_VERIFIED');
+    assert.deepEqual(await inspectRendererBuild(config.targetRoot), before);
+    console.log(JSON.stringify({cycle, status: result.status,
+      consumedInputsUnchanged: true, guiMutations: 'DISABLED'}));
+  }
+})().catch(error => {
+  console.log(JSON.stringify(publicError(error)));
+  process.exitCode = 3;
+});
+NODE
+)
+```
+
+Only fixed status JSON is printed by the Node procedure; assertion details,
+raw app output, RPC tokens, environment values and profiles are not saved.
+The digest comparison covers inspected source/configuration inputs, desktop
+runtime files and built renderer assets; it is **not** a full checkout or host
+profile audit. The lifecycle verifies visible DOM readiness on private Xvfb,
+not a human-observed host desktop window. On failure, stop and share only the
+sanitized status; preserve leased scratch for review.
+
+## Remaining acceptance gates
+
+- Both actual cycles must report LIFECYCLE_VERIFIED, with visible New Project
+  readiness, actual preload/security checks, exact renderer/RPC ownership,
+  graceful exit 0, released private ports, no remaining live sandbox processes,
+  and final filesystem isolation verification. None are locally runtime-verified.
+- Confirm consumed inputs unchanged and assess whether further read-only checkout
+  integrity evidence is needed. Host writable-location exclusion remains a
+  runtime containment gate, not a claim from inspecting normal user data.
+- Review both sanitized results before accepting Batch 1 and enabling any Batch 2
+  mutations. Current config remains unverified and GUI mutations disabled.
+- Batch 2 selectors, Playwright compatibility, projects, navigation, persistence
+  and negative UI behavior have not been exercised. No Batch 3 work is authorized.
+
+Earlier entries below are historical; their approval-gate statements are superseded.
+
+---
+
+# Batch 1 — Final launcher static review (historical)
 
 **Static corrections delivered; runtime acceptance BLOCKED; awaiting owner review.**
 No Electron/Suite launch, GUI mutation, external network access, target mutation,

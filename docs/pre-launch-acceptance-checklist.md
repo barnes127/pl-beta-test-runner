@@ -1,3 +1,9 @@
+> Current authorization (2026-10-17): the owner approved two non-mutating
+> lifecycle validations against only the adjacent disposable checkout. The CLI
+> now enforces that boundary. Approval checkboxes below are historical where
+> superseded; runtime acceptance remains BLOCKED in this execution environment.
+> See [current handoff](batch-1-handoff.md) for evidence and host commands.
+
 # Batch 1 — Pre-launch acceptance checklist
 
 **Status: awaiting owner review. No first live Electron launch has occurred.**

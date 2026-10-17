@@ -1,0 +1,25 @@
+{
+  "contractStatus": "batch-1-unverified",
+  "targetRoot": "../../pl-creators-suite",
+  "buildMode": "development-built-renderer",
+  "desktopAppRelativePath": "apps/desktop",
+  "electronVersionDeclared": "41.10.6",
+  "renderer": {
+    "url": "http://localhost:5173",
+    "requiredPort": 5173,
+    "requireOwnedProcess": true,
+    "strictPort": true
+  },
+  "rpc": {
+    "host": "127.0.0.1",
+    "requiredPort": 38741,
+    "owner": "launched-electron-process",
+    "tokenPersistence": "forbidden"
+  },
+  "isolation": {
+    "status": "unproven",
+    "requireFilesystemContainment": true
+  },
+  "allowGuiMutations": false,
+  "packagedExecutable": null
+}

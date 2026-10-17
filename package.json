@@ -1,0 +1,22 @@
+{
+  "name": "pl-beta-test-runner",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.31.0",
+  "engines": {
+    "node": "22.12.0",
+    "pnpm": "10.31.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test --experimental-test-isolation=none tests/*.test.cjs",
+    "qa": "node dist/cli.js",
+    "format": "node scripts/format.cjs",
+    "format:check": "node scripts/format.cjs --check"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.9",
+    "typescript": "5.9.3"
+  }
+}

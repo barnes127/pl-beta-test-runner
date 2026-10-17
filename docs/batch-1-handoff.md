@@ -1,3 +1,135 @@
+# Batch 1 — Filesystem containment correction (current)
+
+**Acceptance remains BLOCKED pending host revalidation.** This continuation only
+corrected the private-environment proof contract. No Creators Suite launch,
+GUI action, Suite change, host security change, dependency installation, commit,
+push or Batch 2 work occurred. Earlier records below are historical.
+
+## Observed host evidence
+
+Owner ran the previous diagnostic code in a normal Pop!_OS terminal and reports:
+Node 22.12.0 PASS; build PASS; **69 tests passed, zero failed, zero skipped**;
+Xvfb available. Namespace creation, mount setup, proof binary/library availability
+and private loopback networking all PASS. Filesystem containment FAIL with
+`ENVIRONMENT_NOT_ISOLATED`; final proof validation NOT_VERIFIED.
+
+These are owner-supplied runtime results for the previous code, not a successful
+host run of this correction. They demonstrate that the host reached the actual
+filesystem/environment assertions, unlike the agent's earlier netlink failure.
+
+## Exact condition, diagnosis and correction
+
+The old assertion in `src/isolation-proof.ts` combined two checks:
+
+```
+process.env.HOME !== '/scratch/home'
+  || Object.keys(process.env).some(key => !sixExplicitEnvironmentNames.includes(key))
+```
+
+The six names were PATH, HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_DATA_HOME,
+and TMPDIR. **PWD was missing.** `sandboxArgs()` uses `--clearenv` and
+`--chdir /scratch`. The installed Bubblewrap 0.11.0 manual explicitly documents
+that clearenv excepts PWD. Its source sets PWD to the chosen working directory
+after the chdir, immediately before launching the child:
+[Bubblewrap 0.11.0 source](https://github.com/containers/bubblewrap/blob/v0.11.0/bubblewrap.c#L3268).
+The local manual was read directly from `/usr/share/man/man1/bwrap.1.gz`.
+
+Thus Bubblewrap's legitimate `PWD=/scratch` alone necessarily triggered the old
+unexpected-variable predicate. This is a verified code/configuration contract
+defect, reproduced in regression tests; it is sufficient to explain the host's
+reported generic failure. No host environment dump or secret values were needed.
+The old combined diagnostic cannot independently exclude a second bad value;
+the new specific assertions will identify any additional issue on host rerun.
+
+There was no evidence that HOME initialization itself failed. The correction:
+
+- Defines a shared exact environment contract in `src/isolation-environment.ts`.
+- Keeps clearenv and every existing private HOME/XDG/TMP/PATH initialization.
+  The builder uses the shared contract and still leaves PWD generation to
+  Bubblewrap after `--chdir /scratch`.
+- Requires actual `process.cwd()` and PWD both to equal `/scratch`.
+- Requires all seven allowed variables to have their exact expected values;
+  missing values, other private paths and noncanonical spellings fail closed.
+- Rejects every other variable, including credential keys, NODE_OPTIONS,
+  DISPLAY and OLDPWD. It does not silently delete unexpected values or accept
+  arbitrary PWD values.
+- Checks that the new compiled helper exists before attempting the proof.
+
+New allowlisted codes, all in FILESYSTEM_CONTAINMENT:
+`ENV_WORKING_DIRECTORY_MISMATCH`, `ENV_PWD_MISMATCH`, `ENV_HOME_MISMATCH`,
+`ENV_PATH_MISMATCH`, `ENV_XDG_CONFIG_MISMATCH`, `ENV_XDG_CACHE_MISMATCH`,
+`ENV_XDG_DATA_MISMATCH`, `ENV_TMPDIR_MISMATCH`, `ENV_UNEXPECTED_VARIABLE`.
+No variable names from untrusted input, values, paths or secrets are included in
+diagnostics. The old generic code remains recognized for historical failure
+records, but the new assertions emit the specific codes.
+
+Empty-root mounts, read-only system/input mounts, private namespaces/network,
+private storage roots, EROFS write-denial proof, secret handling, nonce/result
+validation and marked cleanup were preserved. No additional host path or service
+is exposed. Electron's sandbox configuration was not touched.
+
+## Validation and commands
+
+| Check / command | Actual result |
+| --- | --- |
+| Read AGENTS, blueprint, discovery and prior handoff | Completed |
+| `bwrap --version` | bubblewrap 0.11.0 |
+| Read installed bwrap manual; inspect official version-tagged source | Confirmed PWD exception and post-chdir assignment |
+| `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm build` | Exit 0 |
+| `pnpm test` | Exit 0: **96 tests, 95 passed, 0 failed, 1 skipped** |
+| `node dist/cli.js isolation-check` | Exit 3, PRIVATE_LOOPBACK_SETUP_DENIED in agent execution; corrected filesystem stage NOT_VERIFIED here |
+| `git diff --check` | Exit 0 |
+
+Local evidence: `artifacts/batch-1-filesystem-containment-tests.tap` (generated,
+ignored). The one skipped test is the live TCP bind test, denied by the agent
+execution environment. The owner had no skips running the prior 69 tests on host;
+that does not imply the new 96-test suite has been run there.
+
+Mocked proof tests now include the complete production environment and private
+cwd, rather than an incomplete environment missing PWD and XDG/TMP fields.
+New regression tests reproduce the original false rejection, verify exact good
+values, reject each missing/altered value, reject cwd/PWD aliases and mismatches,
+reject unexpected secret/injection keys, check sanitized output and verify the
+builder's clearenv/redirect contract. These establish assertion correctness;
+they do not substitute for successful real host containment proof.
+
+## Files changed this continuation
+
+Added: `src/isolation-environment.ts`, `tests/isolation-environment.test.cjs`.
+Updated: `src/isolation.ts`, `src/isolation-proof.ts`,
+`src/isolation-diagnostics.ts`, `tests/isolation-diagnostics.test.cjs`,
+`docs/batch-1-handoff.md`.
+
+Rebuilt ignored dist and generated local test evidence. All pre-existing working
+tree changes were preserved. No target config, package/lockfile, launcher/session
+code, README, AGENTS, blueprint, Suite files or Git metadata were changed this
+turn. Unexpected finding: the earlier proof test fixture also omitted PWD and
+several required redirect variables, so it failed to model Bubblewrap's real
+child environment; that fixture has been corrected.
+
+## Next host commands and remaining gates
+
+Diagnostics only; do not run a launcher or GUI command:
+
+```bash
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm qa isolation-check
+printf 'isolation-check exit=%s\n' "$?"
+```
+
+Record the sanitized JSON result and exit status only. A successful corrected
+host filesystem/proof validation result is still required. If another assertion
+fails, its allowlisted code identifies which requirement failed without an
+environment dump. Overall Batch 1 runtime lifecycle and Electron compatibility
+acceptance remain separate outstanding gates; none was attempted here. Stop for
+owner review. **Batch 1 is not accepted and Batch 2 has not begun.**
+
+---
+
 # Batch 1 — Isolation diagnostics update (current)
 
 **Acceptance remains BLOCKED. Scope: diagnostics only.** No target launch, GUI

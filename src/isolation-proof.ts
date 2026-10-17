@@ -1,3 +1,4 @@
+import { verifyIsolatedEnvironment } from './isolation-environment';
 import { readFile, readdir, writeFile, readlink } from 'node:fs/promises';
 import net from 'node:net';
 import { RunnerError } from './errors';
@@ -80,8 +81,7 @@ export async function proveInsideSandbox() {
         for (const location of ['/home', '/root', '/run'])
             if ((await readdir(location)).length)
                 fail('FILESYSTEM_CONTAINMENT', 'HOST_DIRECTORY_VISIBLE');
-        if (process.env.HOME !== '/scratch/home' || Object.keys(process.env).some(key => !['PATH', 'HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'].includes(key)))
-            fail('FILESYSTEM_CONTAINMENT', 'ENVIRONMENT_NOT_ISOLATED');
+        verifyIsolatedEnvironment(process.env, process.cwd());
         for (const file of ['/etc/.pl-runner-probe', '/runner/.pl-runner-probe', '/usr/.pl-runner-probe']) {
             try {
                 await writeFile(file, 'probe', { flag: 'wx' });

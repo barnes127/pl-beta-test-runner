@@ -48,6 +48,7 @@ test('public diagnostics strip untrusted child fields and reject secret reason s
 });
 async function proofFixture(options,run) {
  const originalEnv=process.env;
+ const cwd=mock.method(process,'cwd',()=>'/scratch');
  const originalExit=process.exitCode;
  const expected={version:1,runId:'fixture',namespaces:Object.fromEntries(['pid','net','mnt','user','ipc'].map(n=>[n,`${n}:outside`]))};
  let report;
@@ -72,9 +73,9 @@ async function proofFixture(options,run) {
    socket.listen=(_port,_host,ready)=>{queueMicrotask(()=>options.bindDenied?socket.emit('error',Object.assign(new Error('SECRET'),{code:'EPERM'})):ready());};
    socket.close=done=>done();return socket;
  });
- process.env={PATH:'/usr/bin:/bin',HOME:'/scratch/home',...(options.secretEnv?{PRIVATE_TOKEN:'SECRET'}:{})};
+ process.env={...require('../dist/isolation-environment').isolatedEnvironment,...(options.secretEnv?{PRIVATE_TOKEN:'SECRET'}:{})};
  try {await run(()=>report);}
- finally {process.env=originalEnv;process.exitCode=originalExit;reads.mock.restore();links.mock.restore();dirs.mock.restore();writes.mock.restore();sockets.mock.restore();}
+ finally {process.env=originalEnv;cwd.mock.restore();process.exitCode=originalExit;reads.mock.restore();links.mock.restore();dirs.mock.restore();writes.mock.restore();sockets.mock.restore();}
 }
 test('complete proof reports all stages passed under mocked private resources',async()=>{
  await proofFixture({},async()=>assert.ok((await proveInsideSandbox()).every(check=>check.status==='PASS')));
@@ -87,7 +88,7 @@ for(const [options,stage,reason] of [
  [{extraInterface:true},'PRIVATE_LOOPBACK_NETWORKING','LOOPBACK_INTERFACE_INVALID'],
  [{bindDenied:true},'PRIVATE_LOOPBACK_NETWORKING','LOOPBACK_BIND_DENIED'],
  [{visibleHome:true},'FILESYSTEM_CONTAINMENT','HOST_DIRECTORY_VISIBLE'],
- [{secretEnv:true},'FILESYSTEM_CONTAINMENT','ENVIRONMENT_NOT_ISOLATED'],
+ [{secretEnv:true},'FILESYSTEM_CONTAINMENT','ENV_UNEXPECTED_VARIABLE'],
  [{writeErrno:'ENOENT'},'FILESYSTEM_CONTAINMENT','WRITE_CONTAINMENT_FAILED'],
  [{writeErrno:'EEXIST'},'FILESYSTEM_CONTAINMENT','WRITE_CONTAINMENT_FAILED'],
  [{badExpected:true},'PROOF_VALIDATION','PROOF_MALFORMED']

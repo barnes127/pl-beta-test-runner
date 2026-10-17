@@ -47,9 +47,18 @@ export async function spawnOwned(command: string, args: string[], options: {
 export async function waitFor(condition: () => Promise<boolean>, timeoutMs: number) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        if (await condition())
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let ready = false;
+        try {
+            ready = await Promise.race([condition(), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new RunnerError('TIMEOUT', 'Startup readiness deadline exceeded.')), Math.max(1, deadline - Date.now())); })]);
+        }
+        finally {
+            if (timer)
+                clearTimeout(timer);
+        }
+        if (ready)
             return;
-        await new Promise(resolve => setTimeout(resolve, 25));
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(0, deadline - Date.now()))));
     }
     throw new RunnerError('TIMEOUT', 'Startup readiness deadline exceeded.');
 }
@@ -129,15 +138,30 @@ export async function assertPortFree(port: number) {
     for (const host of ['0.0.0.0', '::']) {
         await new Promise<void>((resolve, reject) => {
             const server = net.createServer();
+            let settled = false;
+            const finish = (error?: RunnerError) => {
+                if (settled)
+                    return;
+                settled = true;
+                clearTimeout(timer);
+                error ? reject(error) : resolve();
+            };
+            const timer = setTimeout(() => {
+                try {
+                    server.close(() => { });
+                }
+                catch { }
+                finish(new RunnerError('PORT_UNAVAILABLE', 'Listener probe deadline exceeded.'));
+            }, 1000);
+            // A transient bind probe must never retain an unsolicited connection.
+            server.on('connection', socket => socket.destroy());
             server.once('error', (error: NodeJS.ErrnoException) => {
                 if (host === '::' && error.code === 'EAFNOSUPPORT')
-                    resolve();
+                    finish();
                 else
-                    reject(error.code === 'EADDRINUSE'
-                        ? new RunnerError('PORT_CONFLICT', 'Required listener port is already occupied.')
-                        : new RunnerError('PORT_UNAVAILABLE', 'Required listener port cannot be checked in this environment.'));
+                    finish(error.code === 'EADDRINUSE' ? new RunnerError('PORT_CONFLICT', 'Required listener port is already occupied.') : new RunnerError('PORT_UNAVAILABLE', 'Required listener port cannot be checked in this environment.'));
             });
-            server.listen({ port, host, exclusive: true, ipv6Only: host === '::' }, () => server.close(error => error ? reject(new RunnerError('PORT_CONFLICT', 'Port probe failed.')) : resolve()));
+            server.listen({ port, host, exclusive: true, ipv6Only: host === '::' }, () => server.close(error => finish(error ? new RunnerError('PORT_UNAVAILABLE', 'Port probe did not close cleanly.') : undefined)));
         });
     }
 }
@@ -189,7 +213,7 @@ export async function assertListenerOwner(port: number, expectedPid: number, exp
             }
             catch { /* descriptor closed concurrently */ }
         }
-        if (![...inodes].every(inode => sockets.has(`socket:[${inode}]`)))
+        if ((await processIdentity(expectedPid)).start !== expectedStart || ![...inodes].every(inode => sockets.has(`socket:[${inode}]`)))
             throw new Error();
     }
     catch {

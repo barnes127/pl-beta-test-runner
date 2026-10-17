@@ -29,7 +29,7 @@ test('sandbox has no host-root/home/credential/display mount or security bypass'
   }
 });
 test('mount proof rejects writable system/input roots and missing private scratch',()=>{
-  const locations=['/','/usr','/bin','/lib','/lib64','/runner','/runtime/node','/target','/electron'];
+  const locations=['/','/usr','/bin','/lib','/lib64','/runner','/runtime/node','/isolation-inputs','/target','/electron'];
   const table=locations.map((p,i)=>`${i+1} 0 0:1 / ${p} ro - tmpfs none ro`).join('\n')+'\n99 0 0:1 / /scratch rw - tmpfs none rw';
   verifyMounts(table);
   assert.throws(()=>verifyMounts(table.replace('/usr ro','/usr rw')));

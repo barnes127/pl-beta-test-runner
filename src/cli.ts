@@ -3,7 +3,6 @@ import path from 'node:path';
 import { assertRuntime, loadConfig } from './config';
 import { publicError, RunnerError } from './errors';
 import { doctor } from './doctor';
-import { launch } from './launch';
 import { initializeScratchRoot, createScratch, cleanupScratch } from './scratch';
 import { isolationPreflight } from './isolation';
 async function main() {
@@ -31,12 +30,12 @@ async function main() {
     }
     if (command !== 'doctor' && command !== 'launch')
         throw new RunnerError('CONFIG', 'Unknown command; use help.');
-    const config = await loadConfig(args[1] ?? path.join(root, 'config/example.target.json'));
     if (command === 'launch')
-        return launch(config, root);
+        throw new RunnerError('LAUNCH_BLOCKED', 'First live Electron launch awaits separate owner approval after static review.');
+    const config = await loadConfig(args[1] ?? path.join(root, 'config/example.target.json'));
     const result = await doctor(config);
     // Do not expose local executable paths or other sensitive machine metadata.
-    return { status: result.status, targetMode: result.targetMode, isolation: result.isolation, guiMutations: result.guiMutations };
+    return { status: result.status, targetMode: result.targetMode, isolation: result.isolation, guiMutations: result.guiMutations, build: result.build };
 }
 main().then(result => { process.stdout.write(JSON.stringify(result) + '\n'); }, error => {
     process.stdout.write(JSON.stringify(publicError(error)) + '\n');

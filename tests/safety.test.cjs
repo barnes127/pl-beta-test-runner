@@ -227,7 +227,8 @@ test('read-only doctor rejects missing dependencies without changing target fixt
   const files={
     'package.json':JSON.stringify({engines:{node:'22.12.0'},packageManager:'pnpm@10.31.0',devDependencies:{electron:'41.10.6'}}),
     'apps/desktop/package.json':JSON.stringify({main:'main.js'}),
-    'apps/desktop/main.js':'throw new Error("TARGET MUST NOT EXECUTE");'
+    'apps/desktop/main.js':'throw new Error("TARGET MUST NOT EXECUTE");',
+    'apps/desktop/preload.js':'module.exports={};'
   };
   for(const [name,content] of Object.entries(files)) await fs.writeFile(path.join(target,name),content);
   const config=clone();config.targetRoot=target;

@@ -2,6 +2,13 @@ import http from 'node:http';
 import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isWithin } from './scratch';
+export async function resolveRendererAsset(root: string, url: string) {
+    const pathname = decodeURIComponent(new URL(url, 'http://localhost').pathname);
+    const filename = await realpath(path.join(root, pathname === '/' ? 'index.html' : pathname));
+    if (!isWithin(root, filename) || !(await stat(filename)).isFile())
+        throw new Error('Asset unavailable');
+    return filename;
+}
 // Fixed built assets only; URL queries (including rpcToken) are never logged.
 export async function startRenderer(root: string, port = 5173) {
     root = await realpath(root);
@@ -13,10 +20,7 @@ export async function startRenderer(root: string, port = 5173) {
                 res.end();
                 return;
             }
-            const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname);
-            const filename = await realpath(path.join(root, pathname === '/' ? 'index.html' : pathname));
-            if (!isWithin(root, filename) || !(await stat(filename)).isFile())
-                throw new Error();
+            const filename = await resolveRendererAsset(root, req.url ?? '/');
             const data = await readFile(filename);
             res.writeHead(200, { 'Content-Type': types[path.extname(filename)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' });
             res.end(req.method === 'HEAD' ? undefined : data);

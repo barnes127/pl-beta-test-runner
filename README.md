@@ -48,13 +48,19 @@ before the proof executable runs leaves other stages unverified. Unknown startup
 errors remain `SANDBOX_STARTUP_UNCLASSIFIED`; they are never guessed or printed.
 The binary stage covers the proof's Node loader, not Electron or Xvfb compatibility.
 
-Controlled boot-and-stop code (`pnpm qa launch`) runs only after doctor and
-isolation preflight succeed. It stages desktop JS/JSON and built renderer assets
+**`pnpm qa launch` is gated pending separate owner approval after the static
+review.** Internal boot-and-stop integration also requires doctor and isolation
+preflight to succeed. It stages desktop JS/JSON and built renderer assets
 in scratch, excluding target dependency stores, Git metadata, hidden inputs and
 symlinks. It uses the existing Electron distribution read-only and a **private
 Xvfb display**; it never attaches to host X11/Wayland or an existing Suite.
 Missing Xvfb blocks startup; no installation or security fallback is automatic.
 No `--no-sandbox`, network-sharing, host-home or environment-inheritance fallback.
+
+The sandbox exposes only private state writable at `/scratch`; generated proof
+inputs, staged target, Electron and runner code have no writable guest aliases.
+Doctor rejects outputs older than source/configuration inputs and reports hashes;
+timestamps are not build provenance.
 
 The launcher checks both listener PIDs, source preload and security preferences,
 actual Electron version, isolated storage paths, and a read-only visible New
@@ -65,11 +71,13 @@ raw stdout/stderr, window URLs or RPC tokens are retained. Trusted isolation
 preflight stderr is classified in bounded memory only; raw text is discarded. A process lease left
 by an unconfirmed shutdown blocks automatic cleanup across runner restarts.
 
-**Current validation:** host loopback works (owner supplied evidence), while
-Codex loopback and Bubblewrap network setup are denied. Full empty-root isolation
-and Electron compatibility remain unverified. Review the handoff and validate
-`isolation-check` before considering a host lifecycle run. Runtime inputs are
-snapshots; built renderer freshness is not certified. Packaged mode is unsupported.
+**Current validation:** the owner reports 96/96 tests and all six preflight
+stages passing for the previous revision. Static corrections change the state/input
+mount layout, so host preflight must be repeated for this revision. The inspected
+renderer build is stale and is now blocked. No Electron launch has occurred.
+Review the [pre-launch checklist](docs/pre-launch-acceptance-checklist.md) and
+[handoff](docs/batch-1-handoff.md) before any separate launch approval. Packaged
+mode is unsupported.
 
 CLI outputs JSON. Exit 0 means requested checks completed, 2 means invalid config/
 runtime, 3 means blocked safety/infrastructure, 4 means unexpected failure with

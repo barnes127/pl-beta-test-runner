@@ -1,43 +1,54 @@
-// Runs under Electron only, inside the proved sandbox. No target source edits.
+// Electron-only entry, selected by the /target package wrapper. No app source edits.
 import { waitFor } from './processes';
 import fs from 'node:fs';
 import os from 'node:os';
-import { isWithin } from './scratch';
-const electron = require('electron');
-const { app } = electron;
-function safePath(value: string) {
-    if (!isWithin('/scratch', value))
-        throw new Error();
+import { initializeElectronPaths, inspectWebPreferences } from './electron-contract';
+import { RunnerError } from './errors';
+import { sanitizeLifecycle, LifecycleReason } from './lifecycle-diagnostics';
+const { app } = require('electron');
+function blocked(reason: LifecycleReason) {
+    try {
+        fs.writeFileSync('/scratch/electron-status.json', JSON.stringify({ status: 'BLOCKED', diagnostic: { reasonCode: reason } }), { mode: 0o600 });
+    }
+    finally {
+        app.exit(3);
+    }
 }
-for (const name of ['home', 'userData', 'sessionData', 'appData', 'temp', 'logs', 'crashDumps']) {
-    const destination = `/scratch/electron-${name}`;
-    fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
-    app.setPath(name, destination);
-    safePath(app.getPath(name));
-}
-if (os.homedir() !== '/scratch/home' || app.commandLine.hasSwitch('no-sandbox') || app.commandLine.hasSwitch('disable-web-security'))
-    throw new Error();
-app.setAppPath('/target');
-app.on('web-contents-created', (_event: unknown, contents: any) => {
-    contents.once('did-finish-load', async () => {
-        try {
-            const prefs = contents.getLastWebPreferences();
-            if (prefs.sandbox !== true || prefs.contextIsolation !== true || prefs.nodeIntegration !== false || prefs.preload !== '/target/apps/desktop/preload.js')
-                throw new Error();
-            // Fixed read-only DOM query: no UI action, no token/URL collection.
-            await waitFor(async () => Boolean(await contents.executeJavaScript(`Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === 'New Project' && b.getBoundingClientRect().width > 0)`)), 10000);
-            if (process.versions.electron !== '41.10.6')
-                throw new Error();
-            fs.writeFileSync('/scratch/electron-ready.json', JSON.stringify({ ready: true, sandbox: true, contextIsolation: true, nodeIntegration: false, electron: process.versions.electron }), { mode: 0o600 });
-        }
-        catch {
-            app.exit(3);
-        }
+try {
+    process.once('uncaughtException', () => blocked('ELECTRON_STARTUP_FAILED'));
+    process.once('unhandledRejection', () => blocked('ELECTRON_STARTUP_FAILED'));
+    initializeElectronPaths(app, os.homedir(), process.versions.electron ?? '');
+    app.on('web-contents-created', (_event: unknown, contents: any) => {
+        contents.once('did-fail-load', () => blocked('ELECTRON_STARTUP_FAILED'));
+        contents.once('render-process-gone', () => blocked('ELECTRON_STARTUP_FAILED'));
+        contents.once('did-finish-load', async () => {
+            try {
+                inspectWebPreferences(contents);
+                await waitFor(async () => Boolean(await contents.executeJavaScript(`Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === 'New Project' && b.getBoundingClientRect().width > 0)`)), 10000);
+                const bridge = await contents.executeJavaScript(`typeof window.plMenu?.onMenuAction === 'function'`);
+                if (!bridge) {
+                    blocked('PRELOAD_BRIDGE_MISSING');
+                    return;
+                }
+                fs.writeFileSync('/scratch/electron-status.json', JSON.stringify({ status: 'READY', securityVerified: true, preloadVerified: true, electron: '41.10.6' }), { mode: 0o600 });
+            }
+            catch (error) {
+                blocked(error instanceof RunnerError && error.lifecycle ? sanitizeLifecycle(error.lifecycle).reasonCode : 'UI_READY_TIMEOUT');
+            }
+        });
     });
-});
-const timer = setInterval(() => {
-    if (fs.existsSync('/scratch/stop-electron'))
-        app.quit();
-}, 50);
-timer.unref();
-require('/target/apps/desktop/main.js');
+    const timer = setInterval(() => {
+        if (fs.existsSync('/scratch/stop-electron'))
+            app.quit();
+    }, 50);
+    timer.unref();
+    try {
+        require('/target/apps/desktop/main.js');
+    }
+    catch {
+        blocked('TARGET_IMPORT_FAILED');
+    }
+}
+catch (error) {
+    blocked(error instanceof RunnerError && error.lifecycle ? sanitizeLifecycle(error.lifecycle).reasonCode : 'ELECTRON_BOOTSTRAP_FAILED');
+}

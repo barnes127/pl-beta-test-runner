@@ -6,7 +6,7 @@ const {EventEmitter}=require('node:events');
 const {classifyStartup,startupCollector,emptyChecks,diagnostic,validateProof}=require('../dist/isolation-diagnostics');
 const {RunnerError,publicError}=require('../dist/errors');
 const {proveInsideSandbox,writeProofReport}=require('../dist/isolation-proof');
-const table=['/','/usr','/bin','/lib','/lib64','/runner','/runtime/node'].map((p,i)=>`${i+1} 0 0:1 / ${p} ro - tmpfs none ro`).join('\n')+'\n99 0 0:1 / /scratch rw - tmpfs none rw';
+const table=['/','/usr','/bin','/lib','/lib64','/runner','/runtime/node','/isolation-inputs'].map((p,i)=>`${i+1} 0 0:1 / ${p} ro - tmpfs none ro`).join('\n')+'\n99 0 0:1 / /scratch rw - tmpfs none rw';
 for(const [text,stage,reasonCode] of [
  ['bwrap: Creating new namespace failed: Operation not permitted','NAMESPACE_CREATION','NAMESPACE_SETUP_DENIED'],
  ['bwrap: Failed to bind mount /private/SECRET: Permission denied','MOUNT_SETUP','MOUNT_SETUP_FAILED'],

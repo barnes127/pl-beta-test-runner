@@ -1,3 +1,162 @@
+# Batch 1 — Final launcher static review (current)
+
+**Static corrections delivered; runtime acceptance BLOCKED; awaiting owner review.**
+No Electron/Suite launch, GUI mutation, external network access, target mutation,
+installation, host security change, commit, push or Batch 2 work occurred. The
+CLI launch command now explicitly refuses until separately approved. Local tests
+of that command exercise the refusal only. Earlier records below are historical.
+
+See [pre-launch acceptance checklist](pre-launch-acceptance-checklist.md).
+
+## Owner evidence and applicability
+
+Owner reports Node 22.12.0, build PASS, 96/96 tests PASS, Xvfb installed, all six
+preflight stages PASS and PREFLIGHT_VERIFIED/reviewed=false, with implementation
+pushed to GitHub. These are owner-supplied results for the previous revision.
+No GitHub/network verification was attempted. Local initial runner HEAD was
+`d8f2926` and the worktree was clean. No Electron lifecycle was reported or run.
+
+This review changes private state/input mounts and requires a fresh **non-app**
+host preflight before approving a first launch. Earlier preflight success is not
+proof of an entire live Electron lifecycle or this revised mount layout.
+
+## Findings resolved in runner code
+
+1. **Application-path contract:** direct app.setAppPath is absent from public
+   Electron 41.10.6 declarations (although used internally by the installed
+   default app). The runner now stages a package wrapper with main pointing to
+   the bootstrap, launches `/target` as a directory, and verifies getAppPath and
+   isPackaged rather than calling that internal setter itself.
+2. **Storage initialization:** documented home/appData/userData/sessionData/temp/
+   crashDumps setters run before ready and before target imports, with directories
+   created first and exact getPath equality checked. Home is redirected to and validated against
+   private HOME; logs use the supported explicit setAppLogsPath. Version/security
+   bypass checks precede target imports. Runtime compatibility remains untested.
+3. **Writable aliases:** `/target` used to be reachable through writable
+   `/scratch/target`; generated readonly hosts/proof inputs also had writable
+   scratch aliases. Only run/state is now bound to `/scratch`; target is outside
+   that binding, and generated inputs are separately readonly at /isolation-inputs.
+   Ownership markers, leases and build evidence stay outside guest writable state.
+4. **False shutdown success:** a forced Electron stop previously could lead to
+   lifecycle success. Graceful exit 0 is now required; timeouts/nonzero exits are
+   blocked. A failed stop request no longer skips other owned shutdown attempts.
+5. **Cleanup uncertainty:** leases now precede process spawn. Identity failures,
+   malformed results and unverified inner shutdown retain private scratch and its
+   lease. Reports include cleanup=RETAINED_FOR_REVIEW. A known exec failure with
+   no child can release its lease; confirmed complete shutdown permits cleanup.
+6. **Result/containment checks:** lifecycle results are versioned, nonce-bound,
+   schema-checked and require completed shutdown for success. Ports and remaining
+   live processes are checked before final isolation/application-mount revalidation.
+   Both /target and /electron must have effective readonly mounts.
+7. **Readiness deadline:** a never-settling condition previously defeated waitFor's
+   deadline. Async conditions now have bounded waits; port preflight also bounds
+   closure and destroys unsolicited probe connections. The outer lifecycle deadline
+   allows the display, renderer, Electron readiness and shutdown budgets.
+8. **Stale build:** actual inspected index timestamp is Oct 2; actual App.tsx is
+   Oct 15. Read-only freshness inspection now refuses outputs predating tracked
+   source/configuration inputs. No Suite rebuild was run. SHA-256 source, asset,
+   desktop and staged snapshot digests bind evidence to content; timestamp passes
+   explicitly remain provenance=NOT_PROVEN. Source changes during staging and
+   symlink/hidden input escapes are rejected.
+9. **Diagnostics:** bootstrap, display, renderer, RPC readiness, graceful exit,
+   process cleanup, final containment and result failure codes are allowlisted.
+   Public reports contain no raw error, profile path, URL, RPC token or environment.
+   Bootstrap checks effective security and the actual preload bridge with fixed
+   read-only queries. Unhandled startup failures are converted to fixed codes.
+
+## Static integration conclusions
+
+- Installed Electron 41.10.6 public declarations and embedded default package
+  loader were inspected locally as data, without requiring or launching Electron.
+  Setter timing and existing-directory requirements are enforced. Supported API
+  use is statically established; actual sandbox nesting/preload/graphics startup
+  is not empirically established.
+- Suite main/preload source is unchanged: explicit sandbox=true,
+  contextIsolation=true, nodeIntegration=false, allowlisted plMenu bridge, local
+  renderer URL. Runtime checks now verify both preferences and bridge readiness. The native
+  getLastWebPreferences getter is not publicly declared; its name is present in
+  the local binary, but callable compatibility is unverified. A missing/unusable
+  getter now blocks with PREFERENCE_INSPECTION_UNAVAILABLE, never assumed security.
+- RPC is started inside Electron main by ensureRpcServer, with one memoized server;
+  backend binds 127.0.0.1:38741. Expected owner is the Electron main PID, not an
+  independent backend child. Renderer owns its separate 127.0.0.1:5173 listener.
+  Listener evidence checks socket inode and PID/start identity, including a second
+  identity check after descriptor inspection.
+- Normal home/projects/profiles/credentials and host display/IPC sockets are not
+  mounted. Only trusted system runtime trees and selected inputs are readonly;
+  private state and namespace-local tmp/dev/proc resources support app execution.
+  No security fallback or network-sharing option was introduced.
+- Every input stays readonly throughout the planned lifecycle; final proof is
+  rerun after stopping all children. Descendants that create sessions are covered
+  by the enclosing PID namespace plus final census, not by process groups alone.
+  Actual namespace teardown still needs the separately approved runtime evidence.
+- Suite async window-state close handling does not guarantee persistence completed
+  before quit. This review does not change it or claim persistence validation.
+
+## Validation and exact commands/results
+
+Commands used installed Node 22.12.0 through explicit PATH; no install/update or
+network command was used.
+
+| Command/check | Result |
+| --- | --- |
+| Read AGENTS, blueprint, discovery, previous handoff and runner modules | Completed |
+| Read Suite main/preload/backend/storage/metadata sources | Inspection only |
+| Read Electron declarations, version and embedded default_app.asar text | 41.10.6; public setters and package-root loading confirmed statically |
+| `stat` source and renderer index | Source newer than build, as above |
+| Read-only `inspectRendererBuild('../pl-creators-suite')` | Exit 3, CONFIG: stale renderer; no target code executed |
+| `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm build` | Exit 0 |
+| Final `pnpm test` | Exit 0: **120 tests, 119 passed, 0 failed, 1 skipped** |
+| `node dist/cli.js launch` | Exit 3, LAUNCH_BLOCKED: separate owner approval required; no target loaded |
+| `git diff --check` | Exit 0 |
+
+Local generated evidence: `artifacts/batch-1-static-review-tests.tap` (ignored).
+Real runner tests use disposable files and owned Node children; the inherited
+real bwrap probe tests fail-closed behavior, not a target launch. The live TCP test
+is skipped only for agent-context EPERM. All new Electron API/session integration
+checks use mocks; they never spawn Electron, Xvfb or Suite backend processes.
+
+New regressions cover public path/log setter sequencing and exact verification,
+unsupported app identity/version/security, preload preferences, missing/readonly
+application mounts, readonly input aliases, stale build refusal, wrapper metadata,
+query/traversal/symlink asset confinement, nonsettling deadlines, approval refusal,
+forced quit rejection, stop-request failure, all-child shutdown attempts, and
+lease/scratch retention versus verified cleanup. One initial gate test assumed
+child stdout pipes would be relayed here; it was corrected to capture the fixed
+CLI result in a runner-owned temporary file. No application defect was inferred
+from that test-environment behavior.
+
+## Files changed
+
+Added: `src/electron-contract.ts`, `src/lifecycle-diagnostics.ts`,
+`tests/launcher-static.test.cjs`, `docs/pre-launch-acceptance-checklist.md`.
+
+Updated: `src/cli.ts`, `src/doctor.ts`, `src/electron-entry.ts`, `src/errors.ts`,
+`src/isolation-proof.ts`, `src/isolation.ts`, `src/launch.ts`, `src/processes.ts`,
+`src/renderer-server.ts`, `src/runtime-files.ts`, `src/sandbox-session.ts`,
+`tests/acceptance.test.cjs`, `tests/isolation-diagnostics.test.cjs`,
+`tests/safety.test.cjs`, `README.md`,
+`docs/batch-1-handoff.md`.
+
+Generated: rebuilt ignored dist and local test evidence. No target files,
+configuration, dependencies, lockfiles, runner package files, AGENTS, blueprint
+or Git metadata changed. No commit or push. All unexpected findings are listed
+above, including stale assets, writable aliases, the internal preference-inspection
+API limitation and the test stdout limitation.
+
+## Remaining gates / stop
+
+**Do not launch yet.** Owner review must address stale renderer provenance through
+normal Suite workflow, new runner test results, renewed host isolation-check for
+separated inputs/state, exact build hashes and the pre-launch checklist. Then a
+separate approval may authorize removing the CLI gate and performing one
+non-mutating Electron lifecycle validation. That runtime must demonstrate security,
+preload, actual listener ownership, graceful exit, complete namespace/process/port
+teardown and cleanup. Live runtime, Playwright integration and persistence remain
+untested. Batch 2 and GUI mutations remain unauthorized. Stop for owner review.
+
+---
+
 # Batch 1 — Filesystem containment correction (current)
 
 **Acceptance remains BLOCKED pending host revalidation.** This continuation only

@@ -8,7 +8,7 @@ function fail(stage: IsolationStage, reason: IsolationReason): never {
 }
 export function verifyMounts(mounts: string) {
     const entries = mounts.trim().split('\n').map(line => line.split(' '));
-    for (const destination of ['/', '/usr', '/bin', '/lib', '/lib64', '/runner', '/runtime/node']) {
+    for (const destination of ['/', '/usr', '/bin', '/lib', '/lib64', '/runner', '/runtime/node', '/isolation-inputs']) {
         const mount = entries.find(fields => fields[4] === destination);
         if (!mount)
             fail('MOUNT_SETUP', 'MOUNT_REQUIRED_MISSING');
@@ -19,13 +19,20 @@ export function verifyMounts(mounts: string) {
         fail('MOUNT_SETUP', 'SCRATCH_NOT_WRITABLE');
     for (const fields of entries) {
         const destination = fields[4] ?? '';
-        if (['/usr', '/bin', '/lib', '/lib64', '/runner', '/runtime', '/target', '/electron'].some(root => destination === root || destination.startsWith(root + '/')) && !fields[5]?.split(',').includes('ro'))
+        if (['/usr', '/bin', '/lib', '/lib64', '/runner', '/runtime', '/target', '/electron', '/isolation-inputs'].some(root => destination === root || destination.startsWith(root + '/')) && !fields[5]?.split(',').includes('ro'))
             fail('MOUNT_SETUP', 'MOUNT_NOT_READ_ONLY');
     }
 }
+export function verifyApplicationMounts(mounts: string) {
+    verifyMounts(mounts);
+    const entries = mounts.trim().split('\n').map(line => line.split(' '));
+    for (const point of ['/target', '/electron'])
+        if (!entries.some(fields => fields[4] === point && fields[5]?.split(',').includes('ro')))
+            fail('MOUNT_SETUP', 'MOUNT_REQUIRED_MISSING');
+}
 async function expectedNamespaces() {
     try {
-        const expected = JSON.parse(await readFile('/scratch/expected-namespaces.json', 'utf8'));
+        const expected = JSON.parse(await readFile('/isolation-inputs/expected-namespaces.json', 'utf8'));
         if (expected.version !== 1 || typeof expected.runId !== 'string' || !expected.runId || !expected.namespaces || !['pid', 'net', 'mnt', 'user', 'ipc'].every(name => typeof expected.namespaces[name] === 'string'))
             throw new Error();
         return expected as {

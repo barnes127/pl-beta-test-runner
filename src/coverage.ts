@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { smokeIds, functionalIds, scenarioIds } from './smoke-contract';
+import { smokeIds, functionalIds, wave2Ids, scenarioIds } from './smoke-contract';
 const registryPath = 'docs/capabilities/registry';
 const registryId = /^PL-[A-Z0-9]+-[A-Z0-9]+-\d{3}$/;
 const registryStatuses = ['complete', 'partial', 'missing', 'blocked', 'deferred'] as const;
@@ -13,7 +13,10 @@ const mapping: Record<typeof scenarioIds[number], readonly string[]> = {
     'PL-QA-PROJ-002': [],
     'PL-QA-FUNC-SETTINGS-001': ['PL-CORE-ACCESS-001'],
     'PL-QA-FUNC-KEY-001': ['PL-CORE-SHELL-001'],
-    'PL-QA-FUNC-DIALOG-001': ['PL-CORE-ACCESS-001']
+    'PL-QA-FUNC-DIALOG-001': ['PL-CORE-ACCESS-001'],
+    'PL-QA-W2-LOGS-001': ['PL-CORE-SHELL-001'],
+    'PL-QA-W2-DIAG-001': ['PL-CORE-DIAG-001'],
+    'PL-QA-W2-PROJLOG-001': ['PL-CORE-DIAG-001']
 };
 export interface RegistryInventory {
     digest: string;
@@ -116,7 +119,7 @@ export function makeCoverage(inventory: RegistryInventory | undefined, scenarios
     result: 'PASS' | 'FAIL' | 'NOT_RUN';
 }[]): CoverageSummary {
     const hasFailure = scenarios.some(s => s.result === 'FAIL');
-    const ids = scenarios.length === functionalIds.length && scenarios.every((item, index) => item.id === functionalIds[index]) ? functionalIds : smokeIds;
+    const ids = scenarios.length === wave2Ids.length && scenarios.every((item, index) => item.id === wave2Ids[index]) ? wave2Ids : scenarios.length === functionalIds.length && scenarios.every((item, index) => item.id === functionalIds[index]) ? functionalIds : smokeIds;
     const mapped = ids.map(id => {
         const status = scenarios.find(s => s.id === id)?.result;
         const result = status === 'NOT_RUN' || !status ? (hasFailure ? 'SKIPPED' : 'BLOCKED') : status;

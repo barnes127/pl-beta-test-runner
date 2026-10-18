@@ -1,5 +1,6 @@
 import { runSmokeScenarios } from './smoke';
 import { runFunctionalScenarios } from './functional';
+import { runWave2Scenarios } from './functional-wave2';
 import { validateSmokePlan, validateSmokePermit } from './smoke-contract';
 // Electron-only entry, selected by the /target package wrapper. No app source edits.
 import { assertListenerOwner, processIdentity, waitFor } from './processes';
@@ -31,11 +32,13 @@ async function boot() {
         const smokeRequested = fs.existsSync('/isolation-inputs/smoke-plan.json');
         let evidenceProbe = false;
         let functional = false;
+        let wave2 = false;
         if (smokeRequested) {
             try {
                 const plan = validateSmokePlan(JSON.parse(fs.readFileSync('/isolation-inputs/smoke-plan.json', 'utf8')), runId);
                 evidenceProbe = plan.evidenceProbe;
                 functional = plan.suite === 'batch-4-v1';
+                wave2 = plan.suite === 'batch-4-v2';
             }
             catch {
                 blocked('SMOKE_GATE_INVALID');
@@ -70,7 +73,7 @@ async function boot() {
                             inspectWebPreferences(contents, true);
                             verifyPreloadBridge(await contents.executeJavaScript(`typeof window.plMenu?.onMenuAction === 'function'`));
                         };
-                        const report = functional ? await runFunctionalScenarios(contents, runId, verifySession) : await runSmokeScenarios(contents, runId, verifySession, evidenceProbe);
+                        const report = wave2 ? await runWave2Scenarios(contents, runId, verifySession) : functional ? await runFunctionalScenarios(contents, runId, verifySession) : await runSmokeScenarios(contents, runId, verifySession, evidenceProbe);
                         if (report.status === 'FAIL') {
                             const failedScenario = report.scenarios.find(item => item.status === 'FAIL')!.id;
                             let capture;

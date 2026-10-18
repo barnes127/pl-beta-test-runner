@@ -1,4 +1,4 @@
-import { smokeIds, functionalIds } from './smoke-contract';
+import { smokeIds, functionalIds, wave2Ids } from './smoke-contract';
 import { environmentReport } from './environment';
 import path from 'node:path';
 import { assertRuntime, loadConfig } from './config';
@@ -16,13 +16,13 @@ async function main() {
     const [command, ...args] = process.argv.slice(2);
     const root = path.resolve(__dirname, '..');
     if (command === 'help' && args.length === 0)
-        return { commands: ['environment', 'doctor', 'isolation-check', 'launch', 'list', 'run', 'functional', 'evidence-check'], usage: 'pnpm qa <command> [--config <file>]' };
+        return { commands: ['environment', 'doctor', 'isolation-check', 'launch', 'list', 'run', 'functional', 'functional-wave2', 'evidence-check'], usage: 'pnpm qa <command> [--config <file>]' };
     if (args.length && (args.length !== 2 || args[0] !== '--config' || !args[1]))
         throw new RunnerError('CONFIG', 'Expected --config <file>; shell commands and extra arguments are unsupported.');
     if (command === 'environment' && args.length === 0)
         return environmentReport();
     if (command === 'list')
-        return { status: 'IMPLEMENTED_HOST_VERIFIED', scenarios: smokeIds, functionalScenarios: functionalIds, functionalValidation: 'HOST_VALIDATION_REQUIRED', guiMutations: 'RUN_ONLY_AFTER_RUNTIME_GATES', isolationReview: 'PENDING' };
+        return { status: 'IMPLEMENTED_HOST_VERIFIED', scenarios: smokeIds, functionalScenarios: functionalIds, functionalValidation: 'HOST_VERIFIED', wave2Scenarios: wave2Ids, wave2Validation: 'HOST_VALIDATION_REQUIRED', guiMutations: 'RUN_ONLY_AFTER_RUNTIME_GATES', isolationReview: 'PENDING' };
     if (command === 'isolation-check') {
         const scratch = await createScratch(await initializeScratchRoot(root));
         try {
@@ -32,9 +32,9 @@ async function main() {
             await cleanupScratch(scratch);
         }
     }
-    if (command !== 'doctor' && command !== 'launch' && command !== 'run' && command !== 'functional' && command !== 'evidence-check')
+    if (command !== 'doctor' && command !== 'launch' && command !== 'run' && command !== 'functional' && command !== 'functional-wave2' && command !== 'evidence-check')
         throw new RunnerError('CONFIG', 'Unknown command; use help.');
-    if (command === 'run' || command === 'functional' || command === 'evidence-check') {
+    if (command === 'run' || command === 'functional' || command === 'functional-wave2' || command === 'evidence-check') {
         const observation: LaunchObservation = {};
         let result: Awaited<ReturnType<typeof launch>> | undefined;
         let failure: unknown;
@@ -50,7 +50,7 @@ async function main() {
             catch {
                 throw new RunnerError('CONFIG', 'Capability registry could not be verified.');
             }
-            result = await launch(config, root, true, observation, command === 'evidence-check', command === 'functional');
+            result = await launch(config, root, true, observation, command === 'evidence-check', command === 'functional', command === 'functional-wave2');
         }
         catch (error) {
             failure = error;

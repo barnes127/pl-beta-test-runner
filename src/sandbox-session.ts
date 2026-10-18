@@ -31,6 +31,7 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
     let ready = false;
     let mutationsEnabled = false;
     let smoke: SmokeReport | undefined;
+    let expectedSuite: 'batch-2-v1' | 'batch-4-v1' = 'batch-2-v1';
     let screenshotMessage: unknown;
     let screenshotMessages = 0;
     let screenshotTransfer: string | undefined;
@@ -38,7 +39,7 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
         runId = JSON.parse(await readFile('/isolation-inputs/expected-namespaces.json', 'utf8')).runId;
         if (smokeRequested) {
             try {
-                validateSmokePlan(JSON.parse(await readFile('/isolation-inputs/smoke-plan.json', 'utf8')), runId);
+                expectedSuite = validateSmokePlan(JSON.parse(await readFile('/isolation-inputs/smoke-plan.json', 'utf8')), runId).suite;
             }
             catch {
                 throw lifecycleError('SMOKE_GATE_INVALID');
@@ -157,6 +158,8 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
                     }
                     try {
                         smoke = validateSmokeReport(JSON.parse(text), runId);
+                        if ((smoke.suite ?? 'batch-2-v1') !== expectedSuite)
+                            throw new Error();
                     }
                     catch {
                         throw lifecycleError('SMOKE_GATE_INVALID');

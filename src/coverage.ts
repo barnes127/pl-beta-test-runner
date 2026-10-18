@@ -1,16 +1,19 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { smokeIds } from './smoke-contract';
+import { smokeIds, functionalIds, scenarioIds } from './smoke-contract';
 const registryPath = 'docs/capabilities/registry';
 const registryId = /^PL-[A-Z0-9]+-[A-Z0-9]+-\d{3}$/;
 const registryStatuses = ['complete', 'partial', 'missing', 'blocked', 'deferred'] as const;
-const mapping: Record<typeof smokeIds[number], readonly string[]> = {
+const mapping: Record<typeof scenarioIds[number], readonly string[]> = {
     'PL-QA-BOOT-001': ['PL-CORE-SHELL-001'],
     'PL-QA-NAV-001': ['PL-CORE-SHELL-001'],
     'PL-QA-PROJ-001': [],
     'PL-QA-PERSIST-001': ['PL-CODE-FILE-001', 'PL-CODE-FILE-002', 'PL-CODE-FILE-003'],
-    'PL-QA-PROJ-002': []
+    'PL-QA-PROJ-002': [],
+    'PL-QA-FUNC-SETTINGS-001': ['PL-CORE-ACCESS-001'],
+    'PL-QA-FUNC-KEY-001': ['PL-CORE-SHELL-001'],
+    'PL-QA-FUNC-DIALOG-001': ['PL-CORE-ACCESS-001']
 };
 export interface RegistryInventory {
     digest: string;
@@ -57,7 +60,7 @@ export async function inspectCapabilityRegistry(targetRoot: string): Promise<Reg
                 throw new Error('REGISTRY_UNVERIFIED');
         }
     }
-    for (const ids of Object.values(mapping))
+    for (const ids of smokeIds.map(id => mapping[id]))
         for (const id of ids)
             if (!capabilities.some(c => c.id === id && c.registryStatus === 'complete'))
                 throw new Error('REGISTRY_UNVERIFIED');
@@ -71,7 +74,7 @@ export interface CoverageSummary {
     applicableBehaviorDenominator: null;
     denominatorReason: 'BEHAVIOR_APPLICABILITY_NOT_IN_REGISTRY';
     scenarios: {
-        id: typeof smokeIds[number];
+        id: typeof scenarioIds[number];
         capabilityIds: string[];
         mapping: 'VERIFIED' | 'UNMAPPED' | 'NOT_VERIFIED';
         result: 'PASS' | 'FAIL' | 'BLOCKED' | 'SKIPPED';
@@ -80,7 +83,7 @@ export interface CoverageSummary {
     capabilities: {
         id: string;
         registryStatus: typeof registryStatuses[number];
-        testIds: typeof smokeIds[number][];
+        testIds: typeof scenarioIds[number][];
         coverage: 'VALIDATED_BEHAVIOR' | 'FAILED_BEHAVIOR' | 'BLOCKED' | 'NOT_COVERED' | 'UNSUPPORTED' | 'DEFERRED';
     }[];
     registryCounts: {
@@ -99,7 +102,7 @@ export interface CoverageSummary {
         deferred: number | null;
     };
     scenarioCounts: {
-        implemented: 5;
+        implemented: number;
         executed: number;
         passed: number;
         failed: number;
@@ -109,11 +112,12 @@ export interface CoverageSummary {
     manualCoverage: 'NOT_ASSESSED';
 }
 export function makeCoverage(inventory: RegistryInventory | undefined, scenarios: {
-    id: typeof smokeIds[number];
+    id: typeof scenarioIds[number];
     result: 'PASS' | 'FAIL' | 'NOT_RUN';
 }[]): CoverageSummary {
     const hasFailure = scenarios.some(s => s.result === 'FAIL');
-    const mapped = smokeIds.map(id => {
+    const ids = scenarios.length === functionalIds.length && scenarios.every((item, index) => item.id === functionalIds[index]) ? functionalIds : smokeIds;
+    const mapped = ids.map(id => {
         const status = scenarios.find(s => s.id === id)?.result;
         const result = status === 'NOT_RUN' || !status ? (hasFailure ? 'SKIPPED' : 'BLOCKED') : status;
         return { id, capabilityIds: inventory ? [...mapping[id]] : [], mapping: inventory ? mapping[id].length ? 'VERIFIED' : 'UNMAPPED' : 'NOT_VERIFIED', result, mode: 'AUTOMATED' } as CoverageSummary['scenarios'][number];
@@ -134,12 +138,12 @@ export function makeCoverage(inventory: RegistryInventory | undefined, scenarios
         scenarios: mapped, capabilities,
         registryCounts: inventory ? { complete: capabilities.filter(c => c.registryStatus === 'complete').length, partial: capabilities.filter(c => c.registryStatus === 'partial').length, missing: capabilities.filter(c => c.registryStatus === 'missing').length, blocked: capabilities.filter(c => c.registryStatus === 'blocked').length, deferred: capabilities.filter(c => c.registryStatus === 'deferred').length } : { complete: null, partial: null, missing: null, blocked: null, deferred: null },
         coverageCounts: inventory ? { withValidatedBehavior: capabilities.filter(c => c.coverage === 'VALIDATED_BEHAVIOR').length, withFailedBehavior: capabilities.filter(c => c.coverage === 'FAILED_BEHAVIOR').length, blocked: capabilities.filter(c => c.coverage === 'BLOCKED').length, notCovered: capabilities.filter(c => c.coverage === 'NOT_COVERED').length, unsupported: capabilities.filter(c => c.coverage === 'UNSUPPORTED').length, deferred: capabilities.filter(c => c.coverage === 'DEFERRED').length } : { withValidatedBehavior: null, withFailedBehavior: null, blocked: null, notCovered: null, unsupported: null, deferred: null },
-        scenarioCounts: { implemented: 5, executed: mapped.filter(s => s.result === 'PASS' || s.result === 'FAIL').length, passed: mapped.filter(s => s.result === 'PASS').length, failed: mapped.filter(s => s.result === 'FAIL').length, blocked: mapped.filter(s => s.result === 'BLOCKED').length, skipped: mapped.filter(s => s.result === 'SKIPPED').length },
+        scenarioCounts: { implemented: ids.length, executed: mapped.filter(s => s.result === 'PASS' || s.result === 'FAIL').length, passed: mapped.filter(s => s.result === 'PASS').length, failed: mapped.filter(s => s.result === 'FAIL').length, blocked: mapped.filter(s => s.result === 'BLOCKED').length, skipped: mapped.filter(s => s.result === 'SKIPPED').length },
         manualCoverage: 'NOT_ASSESSED'
     };
 }
 export function validateCoverage(value: unknown, scenarios: {
-    id: typeof smokeIds[number];
+    id: typeof scenarioIds[number];
     result: 'PASS' | 'FAIL' | 'NOT_RUN';
 }[]): CoverageSummary {
     const v = value as CoverageSummary;
@@ -152,7 +156,7 @@ export function validateCoverage(value: unknown, scenarios: {
     });
     if (raw.some((c, index) => index > 0 && raw[index - 1]!.id >= c.id))
         throw new Error('REPORT_RESULT_INVALID');
-    if (v.registry === 'INSPECTED_CHECKOUT' && Object.values(mapping).flat().some(id => !raw.some(c => c.id === id && c.registryStatus === 'complete')))
+    if (v.registry === 'INSPECTED_CHECKOUT' && scenarios.flatMap(s => mapping[s.id]).some(id => !raw.some(c => c.id === id && c.registryStatus === 'complete')))
         throw new Error('REPORT_RESULT_INVALID');
     if (v.registry === 'INSPECTED_CHECKOUT' ? typeof v.registryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(v.registryDigest) : v.registryDigest !== null || raw.length !== 0)
         throw new Error('REPORT_RESULT_INVALID');

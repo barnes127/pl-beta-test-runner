@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { SmokeReport, smokeIds } from './smoke-contract';
+import { SmokeReport, smokeIds, scenarioIds } from './smoke-contract';
 // Reviewed owner-host source/renderer/desktop snapshot from the accepted run.
 // A changed checkout needs a separate screenshot-boundary review; smoke itself
 // may still run and report an omitted image.
@@ -32,7 +32,7 @@ export interface ScreenshotRecord {
     contractVersion: 1;
     status: ScreenshotStatus;
     runId: string;
-    scenarioId: typeof smokeIds[number] | null;
+    scenarioId: typeof scenarioIds[number] | null;
     stage: 'SCENARIO_FAILURE' | 'NO_GUI_FAILURE';
     artifact: string | null;
     width: number | null;
@@ -246,6 +246,8 @@ export async function captureFailedUi(contents: CaptureContents, window: Capture
     if (!failure)
         return { record: omittedScreenshot(runId, null, 'OMITTED_NOT_APPLICABLE', 'NO_GUI_FAILURE') };
     const omitted = (status: 'OMITTED_SAFETY_GATE' | 'OMITTED_CAPTURE_FAILED', reason: ScreenshotReason) => ({ record: omittedScreenshot(runId, failure.id, status, reason) });
+    if (failure.id !== smokeIds[0])
+        return omitted('OMITTED_SAFETY_GATE', 'CAPTURE_SCOPE_UNAPPROVED');
     if (snapshotDigest !== approvedScreenshotSnapshot)
         return omitted('OMITTED_SAFETY_GATE', 'SNAPSHOT_NOT_APPROVED');
     if (shutdownStarted())
@@ -308,7 +310,7 @@ export async function captureFailedUi(contents: CaptureContents, window: Capture
     }
     return { record: screenshotCaptured(runId, failure.id, png), png };
 }
-export async function readScratchScreenshot(directory: string, runId: string, failedScenario: typeof smokeIds[number], transfer: string): Promise<{
+export async function readScratchScreenshot(directory: string, runId: string, failedScenario: typeof scenarioIds[number], transfer: string): Promise<{
     record: ScreenshotRecord;
     png?: Buffer;
 }> {
@@ -351,7 +353,7 @@ export async function readScratchScreenshot(directory: string, runId: string, fa
         return { record: omittedScreenshot(runId, failedScenario, 'OMITTED_SAFETY_GATE', 'TRANSFER_INVALID') };
     }
 }
-export function validateScreenshotTransfer(value: unknown, runId: string, failedScenario: typeof smokeIds[number]): {
+export function validateScreenshotTransfer(value: unknown, runId: string, failedScenario: typeof scenarioIds[number]): {
     record: ScreenshotRecord;
     png?: Buffer;
 } {
@@ -363,6 +365,8 @@ export function validateScreenshotTransfer(value: unknown, runId: string, failed
     if (!message || typeof message !== 'object' || Array.isArray(message) || message.kind !== 'PL_BETA_SCREENSHOT_V1' || !Object.keys(message).every(key => ['kind', 'record', 'png'].includes(key)))
         throw new Error('SCREENSHOT_TRANSFER_INVALID');
     const record = validateScreenshotRecord(message.record, runId, failedScenario);
+    if (record.status === 'CAPTURED' && failedScenario !== smokeIds[0])
+        throw new Error('SCREENSHOT_TRANSFER_INVALID');
     if (record.status !== 'CAPTURED') {
         if (message.png !== undefined)
             throw new Error('SCREENSHOT_TRANSFER_INVALID');

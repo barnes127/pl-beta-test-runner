@@ -2,7 +2,8 @@
 export const smokeIds = ['PL-QA-BOOT-001', 'PL-QA-NAV-001', 'PL-QA-PROJ-001', 'PL-QA-PERSIST-001', 'PL-QA-PROJ-002'] as const;
 export const functionalIds = ['PL-QA-FUNC-SETTINGS-001', 'PL-QA-FUNC-KEY-001', 'PL-QA-FUNC-DIALOG-001'] as const;
 export const wave2Ids = ['PL-QA-W2-LOGS-001', 'PL-QA-W2-DIAG-001', 'PL-QA-W2-PROJLOG-001'] as const;
-export const scenarioIds = [...smokeIds, ...functionalIds, ...wave2Ids] as const;
+export const wave3Ids = ['PL-QA-W3-LAYOUT-001'] as const;
+export const scenarioIds = [...smokeIds, ...functionalIds, ...wave2Ids, ...wave3Ids] as const;
 export const smokeReasons = [
     'UI_ASSERTION_FAILED', 'UI_ACTION_FAILED', 'SCRATCH_ASSERTION_FAILED', 'READINESS_LOST',
     'BOOT_READINESS_LOST', 'BOOT_INSPECTION_FAILED', 'BOOT_NEW_PROJECT_MISSING_OR_AMBIGUOUS', 'BOOT_NEW_PROJECT_NOT_VISIBLE',
@@ -30,7 +31,10 @@ export const smokeReasons = [
     'W2_HEALTH_LOADING_TIMEOUT', 'W2_HEALTH_SERVICE_ERROR', 'W2_HEALTH_RESULT_UNAVAILABLE', 'W2_HEALTH_RESULT_INVALID', 'W2_HEALTH_INSPECTION_FAILED',
     'W2_DIAG_EXPORT_ACTION_FAILED', 'W2_DIAG_EXPORT_UI_MISSING', 'W2_DIAG_EXPORT_FILE_INVALID',
     'W2_PROJECT_CREATE_FAILED', 'W2_PROJECT_CONTEXT_MISSING', 'W2_PROJECT_MANIFEST_INVALID',
-    'W2_PROJECT_LOG_ACTION_FAILED', 'W2_PROJECT_LOG_STATUS_MISSING', 'W2_PROJECT_LOG_FILE_INVALID'
+    'W2_PROJECT_LOG_ACTION_FAILED', 'W2_PROJECT_LOG_STATUS_MISSING', 'W2_PROJECT_LOG_FILE_INVALID',
+    'W3_READINESS_LOST', 'W3_INITIAL_LAYOUT_MISSING', 'W3_CLOSE_ACTION_FAILED', 'W3_PANEL_DID_NOT_CLOSE',
+    'W3_CLOSED_STATE_NOT_PERSISTED', 'W3_RESET_ACTION_FAILED', 'W3_PANEL_NOT_RESTORED',
+    'W3_RESET_STATUS_NOT_VISIBLE', 'W3_RESET_STATUS_MISSING', 'W3_RESET_STATE_NOT_PERSISTED', 'W3_SCRATCH_CHANGED'
 ] as const;
 export const evidenceTargets = [
     'NEW_PROJECT_BUTTON', 'PROJECT_STATE', 'CODE_NAVIGATION', 'ACTIVE_CODE_NAVIGATION',
@@ -42,14 +46,15 @@ export const evidenceTargets = [
     'PROJECT_DIRECTORY_COUNT', 'SAVED_FILE_BYTES', 'REOPENED_FILE_BYTES',
     'UI_TARGET_UNMAPPED', 'THEME_CONTROL', 'THEME_STATE', 'THEME_PERSISTENCE',
     'SHORTCUT_ACTION', 'SHORTCUT_NAVIGATION', 'DIALOG_ACTION', 'DIALOG_STATE',
-    'HEALTH_CONTROL', 'HEALTH_PANEL', 'HEALTH_RESULT', 'DIAGNOSTIC_EXPORT', 'DIAGNOSTIC_FILE', 'PROJECT_LOG_FILE'
+    'HEALTH_CONTROL', 'HEALTH_PANEL', 'HEALTH_RESULT', 'DIAGNOSTIC_EXPORT', 'DIAGNOSTIC_FILE', 'PROJECT_LOG_FILE',
+    'LAYOUT_CONTROL', 'LAYOUT_STATE', 'LAYOUT_PERSISTENCE'
 ] as const;
 export const evidenceExpectations = [
     'ACTION_DISPATCHED', 'ONE_ELEMENT', 'VISIBLE_ELEMENT', 'EXACT_FIXTURE_TEXT',
     'EXACT_FIXTURE_VALUE', 'ELEMENT_ABSENT', 'NONEMPTY_STATUS', 'STAGE_CONTRACT',
     'SCRATCH_CONTAINED', 'MANIFEST_NAME_SCHEMA_MATCH', 'MANIFEST_UNCHANGED',
     'DIRECTORY_COUNT_UNCHANGED', 'EXACT_FIXTURE_BYTES', 'THEME_PERSISTED', 'NO_PROJECT_CREATED',
-    'PRIVATE_DIAGNOSTIC_EXPORT', 'PRIVATE_PROJECT_LOG'
+    'PRIVATE_DIAGNOSTIC_EXPORT', 'PRIVATE_PROJECT_LOG', 'LAYOUT_PERSISTED'
 ] as const;
 export type SmokeTraceEvent = {
     scenarioId: typeof scenarioIds[number];
@@ -62,7 +67,7 @@ export type SmokeTraceEvent = {
 };
 export interface SmokeReport {
     version: 1 | 2;
-    suite?: 'batch-4-v1' | 'batch-4-v2';
+    suite?: 'batch-4-v1' | 'batch-4-v2' | 'batch-4-v3';
     runId: string;
     status: 'PASS' | 'FAIL';
     trace?: SmokeTraceEvent[];
@@ -74,12 +79,12 @@ export interface SmokeReport {
     }[];
 }
 export function validateSmokePlan(value: any, runId: string) {
-    if (!value || Object.keys(value).sort().join(',') !== 'evidenceProbe,isolationReview,runId,suite,version' || value.version !== 2 || value.runId !== runId || !['batch-2-v1', 'batch-4-v1', 'batch-4-v2'].includes(value.suite) || (value.suite !== 'batch-2-v1' && value.evidenceProbe !== false) || value.isolationReview !== 'PENDING' || typeof value.evidenceProbe !== 'boolean')
+    if (!value || Object.keys(value).sort().join(',') !== 'evidenceProbe,isolationReview,runId,suite,version' || value.version !== 2 || value.runId !== runId || !['batch-2-v1', 'batch-4-v1', 'batch-4-v2', 'batch-4-v3'].includes(value.suite) || (value.suite !== 'batch-2-v1' && value.evidenceProbe !== false) || value.isolationReview !== 'PENDING' || typeof value.evidenceProbe !== 'boolean')
         throw new Error();
     return value as {
         version: 2;
         runId: string;
-        suite: 'batch-2-v1' | 'batch-4-v1' | 'batch-4-v2';
+        suite: 'batch-2-v1' | 'batch-4-v1' | 'batch-4-v2' | 'batch-4-v3';
         isolationReview: 'PENDING';
         evidenceProbe: boolean;
     };
@@ -99,8 +104,9 @@ export function validateSmokePermit(value: any, runId: string) {
 export function validateSmokeReport(value: any, runId: string): SmokeReport {
     const functional = value?.version === 2 && value?.suite === 'batch-4-v1';
     const wave2 = value?.version === 2 && value?.suite === 'batch-4-v2';
-    const ids = wave2 ? wave2Ids : functional ? functionalIds : smokeIds;
-    if (!value || Object.keys(value).some(k => !['runId', 'scenarios', 'status', 'version', 'trace', 'suite'].includes(k)) || (!functional && !wave2 ? value.version !== 1 || value.suite !== undefined : false) || value.runId !== runId || !['PASS', 'FAIL'].includes(value.status) || !Array.isArray(value.scenarios) || value.scenarios.length !== ids.length)
+    const wave3 = value?.version === 2 && value?.suite === 'batch-4-v3';
+    const ids = wave3 ? wave3Ids : wave2 ? wave2Ids : functional ? functionalIds : smokeIds;
+    if (!value || Object.keys(value).some(k => !['runId', 'scenarios', 'status', 'version', 'trace', 'suite'].includes(k)) || (!functional && !wave2 && !wave3 ? value.version !== 1 || value.suite !== undefined : false) || value.runId !== runId || !['PASS', 'FAIL'].includes(value.status) || !Array.isArray(value.scenarios) || value.scenarios.length !== ids.length)
         throw new Error();
     const trace = value.trace === undefined ? undefined : validateSmokeTrace(value.trace);
     let failed = false;
@@ -108,11 +114,13 @@ export function validateSmokeReport(value: any, runId: string): SmokeReport {
         if (!item || Object.keys(item).some(k => !['id', 'status', 'reason', 'durationMs'].includes(k)) || item.id !== ids[index] || !['PASS', 'FAIL', 'NOT_RUN'].includes(item.status) || (item.durationMs !== undefined && (!Number.isSafeInteger(item.durationMs) || item.durationMs < 0 || item.durationMs > 150000 || (item.status === 'NOT_RUN' && item.durationMs !== 0))))
             throw new Error();
         if (item.status === 'FAIL') {
-            if (failed || !smokeReasons.includes(item.reason) || (functional !== item.reason.startsWith('FUNC_')) || (wave2 !== item.reason.startsWith('W2_')) || (item.reason.startsWith('BOOT_') && item.id !== smokeIds[0]) || (item.reason.startsWith('PROJ_') && item.id !== smokeIds[2] && item.id !== smokeIds[4]) || (item.reason.startsWith('PERSIST_') && item.id !== smokeIds[3]))
+            if (failed || !smokeReasons.includes(item.reason) || (functional !== item.reason.startsWith('FUNC_')) || (wave2 !== item.reason.startsWith('W2_')) || (wave3 !== item.reason.startsWith('W3_')) || (item.reason.startsWith('BOOT_') && item.id !== smokeIds[0]) || (item.reason.startsWith('PROJ_') && item.id !== smokeIds[2] && item.id !== smokeIds[4]) || (item.reason.startsWith('PERSIST_') && item.id !== smokeIds[3]))
                 throw new Error();
             if (functional && (!item.reason.startsWith('FUNC_') || (item.reason.startsWith('FUNC_THEME_') && item.id !== functionalIds[0]) || (item.reason.startsWith('FUNC_SHORTCUT_') && item.id !== functionalIds[1]) || (item.reason.startsWith('FUNC_DIALOG_') && item.id !== functionalIds[2])))
                 throw new Error();
             if (wave2 && ((item.reason.startsWith('W2_NO_PROJECT_') && item.id !== wave2Ids[0]) || (item.reason.startsWith('W2_HEALTH_') || item.reason.startsWith('W2_DIAG_')) && item.id !== wave2Ids[1] || (item.reason.startsWith('W2_PROJECT_') && item.id !== wave2Ids[2])))
+                throw new Error();
+            if (wave3 && item.id !== wave3Ids[0])
                 throw new Error();
             failed = true;
         }
@@ -133,7 +141,7 @@ export function validateSmokeReport(value: any, runId: string): SmokeReport {
         if (trace.some(item => item.kind !== 'SCENARIO' && item.outcome === 'FAIL' && scenarios.find(s => s.id === item.scenarioId)?.status !== 'FAIL'))
             throw new Error();
     }
-    return { version: functional || wave2 ? 2 : 1, ...(functional ? { suite: 'batch-4-v1' as const } : wave2 ? { suite: 'batch-4-v2' as const } : {}), runId, status: value.status, scenarios, ...(trace ? { trace } : {}) };
+    return { version: functional || wave2 || wave3 ? 2 : 1, ...(functional ? { suite: 'batch-4-v1' as const } : wave2 ? { suite: 'batch-4-v2' as const } : wave3 ? { suite: 'batch-4-v3' as const } : {}), runId, status: value.status, scenarios, ...(trace ? { trace } : {}) };
 }
 function validateSmokeTrace(value: any): NonNullable<SmokeReport['trace']> {
     if (!Array.isArray(value) || value.length > 128)

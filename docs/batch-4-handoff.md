@@ -1,5 +1,86 @@
 # Batch 4 first wave handoff — 2026-10-17
 
+## Wave 3 targeted status-check correction — 2026-10-18
+
+**Acceptance remains HOST_VALIDATION_REQUIRED.** The owner's live run `0a29d2c8-e7a4-4927-beb9-567eb19c6c91` is a verified report with overall **FAIL**: `PL-QA-W3-LAYOUT-001` stopped at `W3_RESET_STATUS_MISSING` (`STATUS_BAR`, exact text `NOT_OBSERVED`). The trace establishes that Health closed, private storage recorded `inspector:false`, Reset Layout was clicked, and Health visibly returned. It does **not** establish whether the status element was outside the viewport or its text differed; the prior boolean assertion collapsed both cases. The later `inspector:true` and final empty-project checks were not executed. Shutdown, cleanup and final containment were VERIFIED. Screenshot omission (`CAPTURE_SCOPE_UNAPPROVED`) was correct. The owner reports 231/231 host automated tests, six isolation stages and the previous 11 GUI scenarios passing; those results precede this correction.
+
+Read-only Suite inspection found that the actual Reset Layout button in `apps/renderer/src/App.tsx` calls `resetLayout()` and finally sets `"Layout reset to default."`; `ShellStatusBar` in `apps/renderer/src/platform/shell/components.tsx` renders `Status: {status}` in `.statusLeft > span:first-child`. The built renderer asset contains the same button handler and status component. Thus the expected text and selector are source-supported; an actual wrong/missing message would be a Suite behavior discrepancy, not grounds to remove the assertion. The runner's shared `pageOperation('text')` requires viewport visibility but does not scroll the target, while its action operations do. This is a concrete runner observation gap, although the host artifact cannot prove it caused the original failure.
+
+The focused correction first scrolls the exact status element into view and requires it to be visible (`W3_RESET_STATUS_NOT_VISIBLE` on failure), then retains the unchanged exact-text assertion (`W3_RESET_STATUS_MISSING` on failure). Health visibility, both private layout-state checks and the unchanged scratch project root remain mandatory. A focused mock proves that a visible status element with wrong text still fails; another proves an element that cannot be made visible fails before the text check. These mocks do not establish a live PASS or resolve whether the Suite changes status asynchronously. Historical reports retain their original reason code and remain verifiable.
+
+Files changed for this correction: `src/functional-wave3.ts`, `src/smoke-contract.ts`, `tests/functional-wave3.test.cjs`, and this handoff. No Suite file, sandbox setting, screenshot permission, dependency, lease, commit or remote was changed. On Node 22.12.0, `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `pnpm test` and `git diff --check` passed; tests were **231 PASS, 0 FAIL, 1 managed-environment SKIP** out of 232. The failed live report was rechecked with `pnpm report:verify` and returned `REPORT_VERIFIED`, overall FAIL. Local `pnpm qa doctor` was BLOCKED / PORT_UNAVAILABLE, so no new Electron run was attempted in Codex. A new normal-host run is required. If it reports `W3_RESET_STATUS_NOT_VISIBLE`, inspect status-bar layout/viewport behavior; if it again reports `W3_RESET_STATUS_MISSING` after the visibility check passes, treat the missing expected text as a suspected Suite behavior defect for owner review. Do not relabel either as PASS.
+
+```bash
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm format:check
+pnpm typecheck
+pnpm build
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+pnpm qa functional-wave3
+# Replace with the run ID returned above; keep any retained lease for review.
+pnpm report:verify artifacts/reports/<new-run-id>/report.json
+```
+
+Accept Wave 3 only after its real UI and storage checks PASS, report verification returns overall PASS, and shutdown, cleanup and final containment are VERIFIED. Formal isolation review remains PENDING; build provenance and whole-product coverage remain NOT_PROVEN/NOT_VERIFIED. Batch 5 and 6 are unstarted.
+
+## Final Wave 3 closeout — 2026-10-18
+
+**Classification: BATCH_4_IMPLEMENTED_HOST_VALIDATION_REQUIRED.** The safely implementable Wave 3 scope is coded and regression-tested; its one new real Electron scenario has not run in this managed environment. Recommend Batch 4 closure only after the owner-host Wave 3 run and report verify pass with complete shutdown/cleanup/containment. Full restart, native dialogs and error-boundary fault injection remain explicitly deferred, not passed.
+
+### Baseline and historical acceptance
+
+Before Wave 3 edits: canonical runner root `~/Projects/pl-beta-test-runner`, `main` at `dfeb94b`, clean working tree. Adjacent `../pl-creators-suite` is the disposable, inspection-only checkout; its pre-existing owner changes remain untouched. The owner reports 227/227 host automated tests, five baseline smoke, three Wave 1 and three Wave 2 live scenarios PASS; Wave 2 report `bce3d7e7-2a71-4f6a-963f-aaff4f4070a6` is `REPORT_VERIFIED` overall PASS, with shutdown, cleanup and final containment VERIFIED. The owner also verified a clean clone of the Wave 2 commit: 227 PASS, zero FAIL/SKIP. The earlier Wave 2 Health assertion failure and its correction remain documented below; the later host PASS supersedes it as live acceptance, without erasing the failure record. These observations precede Wave 3 changes.
+
+### Final Batch 4 source-discovery matrix
+
+| Area | Source-verified trigger and behavior | Oracle, fixture, mapping | Decision |
+| --- | --- | --- | --- |
+| Full Electron-restart settings persistence | `apps/renderer/src/platform/shell/useShellState.ts`, `storage.ts`, and `App.tsx` persist theme/layout to private `localStorage`; Wave 1 verifies High Contrast in one process. | Would require two owned Electron launches sharing only one validated private profile, complete first shutdown, fresh PID/port/snapshot/isolation proof and second rendered-state check. `PL-CORE-ACCESS-001` maps only to existing Wave 1 behavior. | **DEFERRED.** `sandbox-session.ts` and `launch.ts` supervise one Electron process per fresh scratch run and clean that profile afterward. Reusing it requires a reviewed lifecycle redesign; renderer reload is insufficient. |
+| Native open/save/import/export | `App.tsx` uses `dialog.openProjectFolder`, `dialog.openPlproj`, and `dialog.savePlproj`; `apps/desktop/services/dialogs.js` calls Electron's native `showOpenDialog`/`showSaveDialog` on the first window. | A scratch-only file picker and verified owned dialog/window are required; archive operations also need canonical output and unchanged-state checks. Existing project create/reopen and Wave 2 log export already exercise other project flows. | **DEFERRED.** Native dialogs are outside the DOM driver; no reviewed private-dialog interception or picker ownership proof exists. No dialog was opened on the host display. |
+| Error boundary | `WorkspaceErrorBoundary.tsx` catches render exceptions and shows an alert, with recovery when workspace changes. | A natural deterministic render fault and unchanged scratch oracle would be needed. | **UNVERIFIED/DEFERRED.** No reachable safe UI control produces that exception; injecting a fault or editing Suite source is outside this wave. Existing duplicate-project and no-project log tests cover separate expected-rejection behavior. |
+| Bounded CLI/RPC | Suite `rpc/registry.js` and `services/operations.js` expose fixed methods. Wave 2's UI Export Diagnostics and Export Logs exercise allowlisted renderer→RPC→private-file workflows with visible and file oracles. | `PL-CORE-DIAG-001` is complete and is mapped to the accepted Wave 2 scenarios. | **EXISTING COVERAGE; no new dispatcher.** Direct CLI method selection, arbitrary RPC arguments and backend-only PASS are not justified. |
+| Layout recovery normal workflow | `App.tsx` has the sole Reset Layout button and Health inspector close control; `useShellState.ts:resetLayout` restores default panel visibility and `storage.ts` saves it. `defaults.ts` starts with inspector visible. | Real UI close/restoration, exact status, private `localStorage` visibility before/after, empty scratch project root; registry `PL-CORE-SHELL-001` is `complete`. | **SELECTED** as the one small additional scenario `PL-QA-W3-LAYOUT-001`. It tests same-process private persistence, not restart persistence. |
+| Empty New Project name | `services/projects.js:projectCreate` intentionally substitutes `Untitled`; the modal has no blank-name rejection contract. | A rejection test would contradict actual behavior. | **UNSUPPORTED as a negative validation scenario; not added.** |
+
+### Wave 3 implementation and evidence
+
+`pnpm qa functional-wave3` runs exactly one compile-time scenario (`batch-4-v3`) through the existing nonce-bound permit, reviewed snapshot, private Bubblewrap/Xvfb, Electron security/preload/window checks, listener ownership and mandatory cleanup. It closes the initially visible Health inspector through its real button, requires the panel to disappear and private shell storage to record `inspector:false`, clicks the sole source-verified Reset Layout button, requires the actual panel and fixed visible status to return, and checks `inspector:true` in private storage. Scratch project-root emptiness is checked before and after. No direct RPC call, caller selector/path input, app source edit, or screenshot capture was added. A failure gets a fixed `W3_*` reason, bounded typed trace, reproduction command and an omitted screenshot. Whole-product behavior denominator stays NOT_VERIFIED; formal `isolationReview` PENDING and build provenance NOT_PROVEN.
+
+Changed files in this wave: `src/functional-wave3.ts` and `tests/functional-wave3.test.cjs` (new); `src/cli.ts`, `src/coverage.ts`, `src/electron-entry.ts`, `src/launch.ts`, `src/report.ts`, `src/sandbox-session.ts`, `src/smoke-contract.ts`, `README.md`, and this handoff. No generated artifact, Suite file, dependency, lockfile, commit, push or retained scratch lease was changed or deleted. No unexpected worktree changes were observed.
+
+Mocked negative contracts: action success with an absent panel update produces FAIL; visible restoration with missing private saved state produces FAIL and a reviewable JSON/HTML artifact; unverified session ownership fails; invalid scenario substitution and evidence-probe permission fail validation; a forged screenshot is rejected; unverified cleanup yields BLOCKED. These are not live target results. Historical Wave 1/Wave 2/BOOT screenshot reports remain `REPORT_VERIFIED` under the new validator.
+
+Local commands/results (Node 22.12.0): `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `git diff --check` PASS. Latest complete `pnpm test`: **231 total, 230 PASS, 0 FAIL, 1 SKIP**; an immediately preceding complete run had 229 PASS, 0 FAIL, 2 SKIP. The confirmed skipped case is the existing managed-environment TCP-bind test; skip count varied between runs, so zero-skip host verification remains necessary. Focused Wave 3 tests: **4/4 PASS**. `pnpm qa list` includes the one Wave 3 ID with `HOST_VALIDATION_REQUIRED`. `pnpm qa doctor` is **BLOCKED / PORT_UNAVAILABLE** in this Codex environment, so no isolation probe or Electron GUI launch was attempted here. The prior owner-host Wave 2 report and retained BOOT screenshot report verified successfully. No new live process/port/cleanup claim is made for Wave 3.
+
+### Owner-host acceptance
+
+Run only in a normal Pop!_OS terminal from the runner root, after confirming target build freshness and no unresolved lease conflict:
+
+```bash
+cd ~/Projects/pl-beta-test-runner
+nvm use 22.12.0
+pnpm format:check
+pnpm typecheck
+pnpm build
+pnpm test
+pnpm qa doctor
+pnpm qa isolation-check
+pnpm qa run
+pnpm qa functional
+pnpm qa functional-wave2
+pnpm qa functional-wave3
+# Substitute the new Wave 3 run ID returned by the command:
+pnpm report:verify artifacts/reports/<wave3-run-id>/report.json
+pnpm report:verify artifacts/reports/bce3d7e7-2a71-4f6a-963f-aaff4f4070a6/report.json
+```
+
+Accept the new scenario only if its real UI and private-storage assertions PASS, the report is `REPORT_VERIFIED` overall PASS, screenshot is omitted, Suite source remains unchanged, and shutdown, cleanup and final containment are VERIFIED. If it fails, retain the fixed reason and any lease for review; do not relabel it as unsupported after execution. This one new test plus the historically accepted Waves 1–2 supports the blueprint Batch 4 gate only for mapped, exercised behaviors. Native dialogs, full restart and error-boundary triggering belong to later feature-specific regression work after separate lifecycle/dialog design review; Batch 5 engine/visual coverage and Batch 6 cloud/entitlement work remain unstarted.
+
+---
+
 Status: **Wave 1 HOST_VERIFIED; Wave 2 host run FAILED at Health result / correction HOST_VALIDATION_REQUIRED**. Stop after Wave 2 for owner review. No Batch 5 or 6 work was started.
 
 ## Wave 2 Health failure investigation — 2026-10-18

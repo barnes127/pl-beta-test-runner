@@ -76,8 +76,8 @@ by an unconfirmed shutdown blocks automatic cleanup across runner restarts.
 navigation, scratch project creation (including duplicate-creation rejection),
 Code IDE save/close/reopen, and recent-project context reopen. The command accepts
 no custom script, selector, RPC or project path. `allowGuiMutations: false` stays
-the global config default; the explicit `run` command is the sole scratch-only
-exception, authorized by the owner after Batch 1 runtime acceptance.
+the global config default; only the fixed `run` and functional commands enable
+scratch-only actions after runtime gates, as authorized after Batch 1 acceptance.
 
 A readonly nonce-bound smoke plan plus a supervisor permit issued only after
 fresh isolation, window/preload readiness and exact listener ownership gates
@@ -87,6 +87,17 @@ handlers, with native input setters/events for React; no Playwright, CDP port,
 remote debugger, sandbox switch or dependency is added. Each scenario checks
 observable UI state and project/document scenarios independently read scratch
 output. No direct testing RPC calls substitute for UI actions.
+
+**Batch 4:** `pnpm qa functional` and `pnpm qa functional-wave2` retain their
+owner-verified fixed scenarios. `pnpm qa functional-wave3` adds one fixed,
+host-validation-pending layout recovery scenario: close the default Health
+inspector, confirm the visible and private saved state, select Reset Layout,
+then confirm the inspector and saved state are restored without creating a
+project. It does not claim persistence across an Electron restart. All three
+functional commands require the same doctor, isolation, process-ownership and
+scratch gates as `qa run`; functional failures do not retain screenshots.
+See [Batch 4 handoff](docs/batch-4-handoff.md) for deferred native-dialog,
+restart and error-boundary coverage.
 
 **Managed Codex runtime remains blocked:** TCP DENIED_EPERM; doctor and `run`
 return PORT_UNAVAILABLE before Electron. The owner's normal Pop!_OS terminal

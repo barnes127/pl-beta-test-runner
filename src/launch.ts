@@ -35,6 +35,7 @@ export interface LaunchObservation {
     evidenceProbe?: boolean;
     functional?: boolean;
     wave2?: boolean;
+    wave3?: boolean;
 }
 async function readValidatedBuild(file: string): Promise<NonNullable<LaunchObservation['build']>> {
     const raw: unknown = JSON.parse(await readFile(file, 'utf8'));
@@ -47,9 +48,9 @@ async function readValidatedBuild(file: string): Promise<NonNullable<LaunchObser
 }
 // Default lifecycle is non-mutating. Explicit smoke mode additionally gates
 // scratch-only actions behind fresh readiness, isolation and listener ownership.
-export async function launch(config: TargetConfig, runnerRoot: string, smoke = false, observation?: LaunchObservation, evidenceProbe = false, functional = false, wave2 = false) {
+export async function launch(config: TargetConfig, runnerRoot: string, smoke = false, observation?: LaunchObservation, evidenceProbe = false, functional = false, wave2 = false, wave3 = false) {
     validateConfig(config);
-    if (typeof smoke !== 'boolean' || typeof evidenceProbe !== 'boolean' || typeof functional !== 'boolean' || typeof wave2 !== 'boolean' || ((evidenceProbe || functional || wave2) && !smoke) || Number(evidenceProbe) + Number(functional) + Number(wave2) > 1)
+    if (typeof smoke !== 'boolean' || typeof evidenceProbe !== 'boolean' || typeof functional !== 'boolean' || typeof wave2 !== 'boolean' || typeof wave3 !== 'boolean' || ((evidenceProbe || functional || wave2 || wave3) && !smoke) || Number(evidenceProbe) + Number(functional) + Number(wave2) + Number(wave3) > 1)
         throw new RunnerError('CONFIG', 'Unsupported run mode.');
     if (observation)
         observation.evidenceProbe = evidenceProbe;
@@ -57,6 +58,8 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
         observation.functional = functional;
     if (observation)
         observation.wave2 = wave2;
+    if (observation)
+        observation.wave3 = wave3;
     if (smoke)
         await assertApprovedLaunchTarget(config.targetRoot, runnerRoot);
     const checked = await doctor(config);
@@ -89,7 +92,7 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
             observation.build = build;
         }
         if (smoke)
-            await writeFile(path.join(scratch.directory, 'inputs/smoke-plan.json'), JSON.stringify({ version: 2, runId: scratch.nonce, suite: wave2 ? 'batch-4-v2' : functional ? 'batch-4-v1' : 'batch-2-v1', isolationReview: 'PENDING', evidenceProbe }), { flag: 'wx', mode: 0o600 });
+            await writeFile(path.join(scratch.directory, 'inputs/smoke-plan.json'), JSON.stringify({ version: 2, runId: scratch.nonce, suite: wave3 ? 'batch-4-v3' : wave2 ? 'batch-4-v2' : functional ? 'batch-4-v1' : 'batch-2-v1', isolationReview: 'PENDING', evidenceProbe }), { flag: 'wx', mode: 0o600 });
         const args = [...sandboxArgs(scratch.directory, path.join(runnerRoot, 'dist'), await realpath(process.execPath)),
             '--ro-bind', target, '/target', '--ro-bind', path.dirname(checked.electronExecutable), '/electron',
             '--', '/runtime/node', '/runner/sandbox-session.js'];
@@ -123,7 +126,7 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
             observation.smoke = result.smoke;
             const failedScenario = result.smoke?.scenarios.find(item => item.status === 'FAIL')?.id;
             if (failedScenario && result.shutdownComplete)
-                observation.screenshot = functional || wave2
+                observation.screenshot = functional || wave2 || wave3
                     ? { record: omittedScreenshot(scratch.nonce, failedScenario, 'OMITTED_SAFETY_GATE', 'CAPTURE_SCOPE_UNAPPROVED') }
                     : result.screenshotTransfer
                         ? await readScratchScreenshot(scratch.directory, scratch.nonce, failedScenario, result.screenshotTransfer)
@@ -136,7 +139,7 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
         }
         if (!build)
             build = await readValidatedBuild(path.join(scratch.directory, 'build-evidence.json'));
-        return { status: 'LIFECYCLE_VERIFIED', guiMutations: smoke ? 'SCRATCH_ONLY' : 'DISABLED', scope: wave2 ? 'batch-4-wave2' : functional ? 'batch-4-functional' : smoke ? 'batch-2-smoke' : 'boot-and-stop-only', ...(result.smoke ? { smoke: publicSmokeReport(result.smoke) } : {}), isolationReview: 'PENDING', build: { sourceDigest: build.sourceDigest, assetDigest: build.assetDigest, snapshotDigest: build.snapshotDigest, desktopDigest: build.desktopDigest, provenance: 'NOT_PROVEN' } };
+        return { status: 'LIFECYCLE_VERIFIED', guiMutations: smoke ? 'SCRATCH_ONLY' : 'DISABLED', scope: wave3 ? 'batch-4-wave3' : wave2 ? 'batch-4-wave2' : functional ? 'batch-4-functional' : smoke ? 'batch-2-smoke' : 'boot-and-stop-only', ...(result.smoke ? { smoke: publicSmokeReport(result.smoke) } : {}), isolationReview: 'PENDING', build: { sourceDigest: build.sourceDigest, assetDigest: build.assetDigest, snapshotDigest: build.snapshotDigest, desktopDigest: build.desktopDigest, provenance: 'NOT_PROVEN' } };
     }
     catch (error) {
         if (!cleanupAllowed && error instanceof RunnerError && error.lifecycle) {

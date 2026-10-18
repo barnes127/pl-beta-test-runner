@@ -3,13 +3,14 @@ import { lstat, realpath, mkdir, readFile, writeFile, open, unlink, readdir } fr
 import { randomUUID } from 'node:crypto';
 import { RunnerError } from './errors';
 import { LaunchObservation } from './launch';
-import { smokeIds, functionalIds, wave2Ids, scenarioIds, smokeReasons, validateSmokeReport, SmokeReport } from './smoke-contract';
+import { smokeIds, functionalIds, wave2Ids, wave3Ids, scenarioIds, smokeReasons, validateSmokeReport, SmokeReport } from './smoke-contract';
 import { lifecycleReasons } from './lifecycle-diagnostics';
 import { CoverageSummary, makeCoverage, validateCoverage } from './coverage';
 import { approvedScreenshotSnapshot, omittedScreenshot, ScreenshotRecord, validatePng, validateScreenshotRecord } from './screenshot';
 const names = ['Application boot', 'Workspace navigation', 'New project and duplicate rejection', 'Code document persistence', 'Reopen project context'] as const;
 const functionalNames = ['High contrast setting', 'Workspace keyboard shortcut', 'New Project dialog cancellation'] as const;
 const wave2Names = ['No-project log rejection', 'Private diagnostics export', 'Scratch project log export'] as const;
+const wave3Names = ['Reset private shell layout'] as const;
 const categories = ['UI', 'PERSISTENCE', 'SAFETY', 'LIFECYCLE', 'INFRASTRUCTURE', 'CONFIGURATION', 'INTERNAL'] as const;
 const statuses = ['PASS', 'FAIL', 'BLOCKED'] as const;
 const hash = /^[a-f0-9]{64}$/;
@@ -44,7 +45,7 @@ export interface RunReport {
         automation: 'ELECTRON_WEB_CONTENTS';
         isolationProof: 'RUNTIME_VERIFIED' | 'NOT_VERIFIED';
     };
-    executionMode: 'ISOLATED_SCRATCH_SMOKE' | 'ISOLATED_EVIDENCE_PROBE' | 'ISOLATED_FUNCTIONAL' | 'ISOLATED_FUNCTIONAL_WAVE2';
+    executionMode: 'ISOLATED_SCRATCH_SMOKE' | 'ISOLATED_EVIDENCE_PROBE' | 'ISOLATED_FUNCTIONAL' | 'ISOLATED_FUNCTIONAL_WAVE2' | 'ISOLATED_FUNCTIONAL_WAVE3';
     isolationReview: 'PENDING';
     overall: typeof statuses[number];
     scenarios: Scenario[];
@@ -62,7 +63,7 @@ export interface RunReport {
         screenshot: ScreenshotRecord | 'OMITTED_CONTENT_SAFETY_UNVERIFIED';
         trace: NonNullable<SmokeReport['trace']>;
         reproduction: {
-            command: 'pnpm qa run' | 'pnpm qa evidence-check' | 'pnpm qa functional' | 'pnpm qa functional-wave2';
+            command: 'pnpm qa run' | 'pnpm qa evidence-check' | 'pnpm qa functional' | 'pnpm qa functional-wave2' | 'pnpm qa functional-wave3';
             scenarioId: ScenarioId | null;
             actions: string[];
         } | null;
@@ -79,7 +80,8 @@ const actions: Record<ScenarioId, string[]> = {
     'PL-QA-FUNC-DIALOG-001': ['Open New Project', 'Cancel with button', 'Reopen and dismiss with Escape', 'Check no project or scratch mutation'],
     'PL-QA-W2-LOGS-001': ['Select Export Logs without a project', 'Check visible rejection and unchanged private project root'],
     'PL-QA-W2-DIAG-001': ['Open Health Center', 'Check visible health summary', 'Export diagnostics', 'Check visible confirmation and private export file'],
-    'PL-QA-W2-PROJLOG-001': ['Create a disposable project through UI', 'Select Export Logs', 'Check visible file location and private project log']
+    'PL-QA-W2-PROJLOG-001': ['Create a disposable project through UI', 'Select Export Logs', 'Check visible file location and private project log'],
+    'PL-QA-W3-LAYOUT-001': ['Close the default Health inspector', 'Check visible closure and private saved layout', 'Select Reset Layout', 'Check restored inspector and private saved layout']
 };
 const probeActions = ['Start the isolated evidence check', 'Verify the visible ready window', 'Observe the intentionally absent synthetic project context'];
 function category(reason: string): Category {
@@ -87,7 +89,7 @@ function category(reason: string): Category {
         return 'PERSISTENCE';
     if (reason.includes('SCRATCH') || reason.includes('CONTAINMENT') || reason.includes('ISOLATION') || reason.includes('PATH_INVALID'))
         return 'SAFETY';
-    if (reason.startsWith('BOOT_') || reason.startsWith('PROJ_') || reason.startsWith('PERSIST_') || reason.startsWith('UI_') || reason.startsWith('FUNC_') || reason.startsWith('W2_'))
+    if (reason.startsWith('BOOT_') || reason.startsWith('PROJ_') || reason.startsWith('PERSIST_') || reason.startsWith('UI_') || reason.startsWith('FUNC_') || reason.startsWith('W2_') || reason.startsWith('W3_'))
         return 'UI';
     if (lifecycleReasons.includes(reason as typeof lifecycleReasons[number]) || reason === 'SHUTDOWN_UNVERIFIED' || reason === 'CLEANUP_UNVERIFIED')
         return 'LIFECYCLE';
@@ -114,15 +116,15 @@ function validMs(value: unknown) {
 }
 export function makeRunReport(observation: LaunchObservation, success: unknown, error: unknown, timestamp = new Date().toISOString(), fallbackId = randomUUID()): RunReport {
     const runId = observation.runId && uuid.test(observation.runId) ? observation.runId : fallbackId;
-    const ids = observation.wave2 ? wave2Ids : observation.functional ? functionalIds : smokeIds;
-    const selectedNames = observation.wave2 ? wave2Names : observation.functional ? functionalNames : names;
+    const ids = observation.wave3 ? wave3Ids : observation.wave2 ? wave2Ids : observation.functional ? functionalIds : smokeIds;
+    const selectedNames = observation.wave3 ? wave3Names : observation.wave2 ? wave2Names : observation.functional ? functionalNames : names;
     let smoke: SmokeReport | undefined;
     try {
         if (observation.smoke && observation.runId)
             smoke = validateSmokeReport(observation.smoke, observation.runId);
     }
     catch { /* A malformed child result never becomes report evidence. */ }
-    if (smoke && (observation.wave2 ? smoke.suite !== 'batch-4-v2' : observation.functional ? smoke.suite !== 'batch-4-v1' : smoke.suite !== undefined))
+    if (smoke && (observation.wave3 ? smoke.suite !== 'batch-4-v3' : observation.wave2 ? smoke.suite !== 'batch-4-v2' : observation.functional ? smoke.suite !== 'batch-4-v1' : smoke.suite !== undefined))
         smoke = undefined;
     const complete = !!smoke && smoke.scenarios.every(s => validMs(s.durationMs)) && !!smoke.trace?.length && smoke.scenarios.filter(s => s.status !== 'NOT_RUN').every(s => smoke!.trace!.some(t => t.scenarioId === s.id && t.kind === 'ASSERTION' && t.actual !== undefined));
     const shutdown = observation.shutdownComplete === true;
@@ -166,10 +168,10 @@ export function makeRunReport(observation: LaunchObservation, success: unknown, 
     const report: RunReport = {
         version: 2, runId, timestamp, runnerVersion: '0.1.0', appVersion: verifiedVersion, appBuild: safeBuild,
         environment: { platform: ['linux', 'darwin', 'win32'].includes(process.platform) ? process.platform as 'linux' | 'darwin' | 'win32' : 'other', arch: ['x64', 'arm64'].includes(process.arch) ? process.arch as 'x64' | 'arm64' : 'other', nodeVersion: '22.12.0', electronVersion: '41.10.6', display: 'PRIVATE_XVFB_CONFIGURED', displayResolution: '1280x800x24_CONFIGURED', displayScale: 'NOT_VERIFIED', network: 'PRIVATE_LOOPBACK_CONFIGURED', automation: 'ELECTRON_WEB_CONTENTS', isolationProof: shutdown && !!smoke ? 'RUNTIME_VERIFIED' : 'NOT_VERIFIED' },
-        executionMode: observation.evidenceProbe ? 'ISOLATED_EVIDENCE_PROBE' : observation.wave2 ? 'ISOLATED_FUNCTIONAL_WAVE2' : observation.functional ? 'ISOLATED_FUNCTIONAL' : 'ISOLATED_SCRATCH_SMOKE', isolationReview: 'PENDING', overall, scenarios, coverage,
+        executionMode: observation.evidenceProbe ? 'ISOLATED_EVIDENCE_PROBE' : observation.wave3 ? 'ISOLATED_FUNCTIONAL_WAVE3' : observation.wave2 ? 'ISOLATED_FUNCTIONAL_WAVE2' : observation.functional ? 'ISOLATED_FUNCTIONAL' : 'ISOLATED_SCRATCH_SMOKE', isolationReview: 'PENDING', overall, scenarios, coverage,
         lifecycle: { shutdown: shutdown ? 'VERIFIED' : 'UNVERIFIED', cleanup: cleanup ? 'VERIFIED' : observation.retained ? 'RETAINED_FOR_REVIEW' : 'UNVERIFIED', finalContainment: shutdown ? 'VERIFIED' : 'UNVERIFIED' },
         failure: reasonCode ? { reasonCode, category: category(reasonCode) } : null,
-        evidence: { screenshot, trace: smoke?.trace ?? [], reproduction: reasonCode ? { command: observation.evidenceProbe ? 'pnpm qa evidence-check' : observation.wave2 ? 'pnpm qa functional-wave2' : observation.functional ? 'pnpm qa functional' : 'pnpm qa run', scenarioId: failingId, actions: observation.evidenceProbe && failingId === smokeIds[0] ? probeActions : failingId ? actions[failingId] : ['Run the fixed isolated smoke command'] } : null }
+        evidence: { screenshot, trace: smoke?.trace ?? [], reproduction: reasonCode ? { command: observation.evidenceProbe ? 'pnpm qa evidence-check' : observation.wave3 ? 'pnpm qa functional-wave3' : observation.wave2 ? 'pnpm qa functional-wave2' : observation.functional ? 'pnpm qa functional' : 'pnpm qa run', scenarioId: failingId, actions: observation.evidenceProbe && failingId === smokeIds[0] ? probeActions : failingId ? actions[failingId] : ['Run the fixed isolated smoke command'] } : null }
     };
     return validateRunReport(report);
 }
@@ -177,10 +179,10 @@ export function validateRunReport(value: unknown): RunReport {
     if (!exact(value, ['version', 'runId', 'timestamp', 'runnerVersion', 'appVersion', 'appBuild', 'environment', 'executionMode', 'isolationReview', 'overall', 'scenarios', 'coverage', 'lifecycle', 'failure', 'evidence']))
         throw new Error('REPORT_RESULT_INVALID');
     const v = value as RunReport;
-    if (v.version !== 2 || !uuid.test(v.runId) || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v.timestamp) || Number.isNaN(Date.parse(v.timestamp)) || v.runnerVersion !== '0.1.0' || !(v.appVersion === 'NOT_VERIFIED' || typeof v.appVersion === 'string' && v.appVersion.length <= 32 && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(v.appVersion)) || !['ISOLATED_SCRATCH_SMOKE', 'ISOLATED_EVIDENCE_PROBE', 'ISOLATED_FUNCTIONAL', 'ISOLATED_FUNCTIONAL_WAVE2'].includes(v.executionMode) || v.isolationReview !== 'PENDING' || !statuses.includes(v.overall))
+    if (v.version !== 2 || !uuid.test(v.runId) || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v.timestamp) || Number.isNaN(Date.parse(v.timestamp)) || v.runnerVersion !== '0.1.0' || !(v.appVersion === 'NOT_VERIFIED' || typeof v.appVersion === 'string' && v.appVersion.length <= 32 && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(v.appVersion)) || !['ISOLATED_SCRATCH_SMOKE', 'ISOLATED_EVIDENCE_PROBE', 'ISOLATED_FUNCTIONAL', 'ISOLATED_FUNCTIONAL_WAVE2', 'ISOLATED_FUNCTIONAL_WAVE3'].includes(v.executionMode) || v.isolationReview !== 'PENDING' || !statuses.includes(v.overall))
         throw new Error('REPORT_RESULT_INVALID');
-    const ids = v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? wave2Ids : v.executionMode === 'ISOLATED_FUNCTIONAL' ? functionalIds : smokeIds;
-    const selectedNames = v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? wave2Names : v.executionMode === 'ISOLATED_FUNCTIONAL' ? functionalNames : names;
+    const ids = v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE3' ? wave3Ids : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? wave2Ids : v.executionMode === 'ISOLATED_FUNCTIONAL' ? functionalIds : smokeIds;
+    const selectedNames = v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE3' ? wave3Names : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? wave2Names : v.executionMode === 'ISOLATED_FUNCTIONAL' ? functionalNames : names;
     if (v.executionMode === 'ISOLATED_EVIDENCE_PROBE' && (v.overall === 'PASS' || v.scenarios.some((scenario, index) => index > 0 && scenario.result !== 'NOT_RUN')))
         throw new Error('REPORT_RESULT_INVALID');
     if (v.executionMode === 'ISOLATED_SCRATCH_SMOKE' && v.scenarios.some(scenario => scenario.reasonCode === 'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH'))
@@ -239,13 +241,13 @@ export function validateRunReport(value: unknown): RunReport {
     // Reuse the nonce-bound child validator for every trace entry and its
     // relationship to the reported scenario outcomes.
     if (v.evidence.trace.length)
-        validateSmokeReport({ version: v.executionMode === 'ISOLATED_FUNCTIONAL' || v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? 2 : 1, ...(v.executionMode === 'ISOLATED_FUNCTIONAL' ? { suite: 'batch-4-v1' } : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? { suite: 'batch-4-v2' } : {}), runId: v.runId, status: v.scenarios.some(s => s.result === 'FAIL') ? 'FAIL' : 'PASS', scenarios: v.scenarios.map(s => ({ id: s.id, status: s.result, ...(s.reasonCode ? { reason: s.reasonCode } : {}), ...(s.durationMs !== null ? { durationMs: s.durationMs } : {}) })), trace: v.evidence.trace }, v.runId);
+        validateSmokeReport({ version: v.executionMode === 'ISOLATED_FUNCTIONAL' || v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' || v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE3' ? 2 : 1, ...(v.executionMode === 'ISOLATED_FUNCTIONAL' ? { suite: 'batch-4-v1' } : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? { suite: 'batch-4-v2' } : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE3' ? { suite: 'batch-4-v3' } : {}), runId: v.runId, status: v.scenarios.some(s => s.result === 'FAIL') ? 'FAIL' : 'PASS', scenarios: v.scenarios.map(s => ({ id: s.id, status: s.result, ...(s.reasonCode ? { reason: s.reasonCode } : {}), ...(s.durationMs !== null ? { durationMs: s.durationMs } : {}) })), trace: v.evidence.trace }, v.runId);
     const rep = v.evidence.reproduction;
     if (v.failure === null ? rep !== null : !exact(rep, ['command', 'scenarioId', 'actions']))
         throw new Error('REPORT_RESULT_INVALID');
     if (rep) {
         const expected = v.executionMode === 'ISOLATED_EVIDENCE_PROBE' && rep.scenarioId === smokeIds[0] ? probeActions : rep.scenarioId ? actions[rep.scenarioId] : ['Run the fixed isolated smoke command'];
-        if (rep.command !== (v.executionMode === 'ISOLATED_EVIDENCE_PROBE' ? 'pnpm qa evidence-check' : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? 'pnpm qa functional-wave2' : v.executionMode === 'ISOLATED_FUNCTIONAL' ? 'pnpm qa functional' : 'pnpm qa run') || (rep.scenarioId !== null && !ids.includes(rep.scenarioId as never)) || !Array.isArray(rep.actions) || rep.actions.length !== expected?.length || rep.actions.some((action, index) => typeof action !== 'string' || action !== expected?.[index]))
+        if (rep.command !== (v.executionMode === 'ISOLATED_EVIDENCE_PROBE' ? 'pnpm qa evidence-check' : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE3' ? 'pnpm qa functional-wave3' : v.executionMode === 'ISOLATED_FUNCTIONAL_WAVE2' ? 'pnpm qa functional-wave2' : v.executionMode === 'ISOLATED_FUNCTIONAL' ? 'pnpm qa functional' : 'pnpm qa run') || (rep.scenarioId !== null && !ids.includes(rep.scenarioId as never)) || !Array.isArray(rep.actions) || rep.actions.length !== expected?.length || rep.actions.some((action, index) => typeof action !== 'string' || action !== expected?.[index]))
             throw new Error('REPORT_RESULT_INVALID');
     }
     return v;

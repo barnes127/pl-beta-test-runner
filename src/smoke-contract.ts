@@ -17,16 +17,36 @@ export const smokeReasons = [
     'PERSIST_EDITOR_NOT_CLOSED', 'PERSIST_CLOSED_FILE_NOT_LISTED', 'PERSIST_REOPEN_ACTION_FAILED',
     'PERSIST_REOPEN_CONTENT_MISMATCH', 'PERSIST_REOPEN_BYTES_MISMATCH'
 ] as const;
+export const evidenceTargets = [
+    'NEW_PROJECT_BUTTON', 'PROJECT_STATE', 'CODE_NAVIGATION', 'ACTIVE_CODE_NAVIGATION',
+    'WORKSPACE_TITLE', 'EMPTY_WORKSPACE', 'PROJECT_MODAL', 'PROJECT_NAME_INPUT',
+    'PROJECT_ROOT_INPUT', 'PROJECT_CREATE_BUTTON', 'PROJECT_ERROR', 'PROJECT_CONTEXT',
+    'CODE_FILENAME_INPUT', 'CODE_CREATE_BUTTON', 'CODE_FILE_LIST', 'CODE_EDITOR',
+    'DIRTY_STATUS', 'SAVED_STATUS', 'SAVE_BUTTON', 'CLOSE_BUTTON', 'RECENT_PROJECT_ITEM',
+    'STATUS_BAR', 'SCRATCH_PROJECT_ROOT', 'PROJECT_MANIFEST', 'DUPLICATE_MANIFEST',
+    'PROJECT_DIRECTORY_COUNT', 'SAVED_FILE_BYTES', 'REOPENED_FILE_BYTES',
+    'UI_TARGET_UNMAPPED'
+] as const;
+export const evidenceExpectations = [
+    'ACTION_DISPATCHED', 'ONE_ELEMENT', 'VISIBLE_ELEMENT', 'EXACT_FIXTURE_TEXT',
+    'EXACT_FIXTURE_VALUE', 'ELEMENT_ABSENT', 'NONEMPTY_STATUS', 'STAGE_CONTRACT',
+    'SCRATCH_CONTAINED', 'MANIFEST_NAME_SCHEMA_MATCH', 'MANIFEST_UNCHANGED',
+    'DIRECTORY_COUNT_UNCHANGED', 'EXACT_FIXTURE_BYTES'
+] as const;
+export type SmokeTraceEvent = {
+    scenarioId: typeof smokeIds[number];
+    kind: 'SCENARIO' | 'ACTION' | 'ASSERTION';
+    outcome: 'START' | 'PASS' | 'FAIL';
+    elapsedMs: number;
+    target?: typeof evidenceTargets[number] | typeof smokeReasons[number];
+    expected?: typeof evidenceExpectations[number];
+    actual?: 'OBSERVED' | 'NOT_OBSERVED' | 'UNVERIFIED';
+};
 export interface SmokeReport {
     version: 1;
     runId: string;
     status: 'PASS' | 'FAIL';
-    trace?: {
-        scenarioId: typeof smokeIds[number];
-        kind: 'SCENARIO' | 'ACTION' | 'ASSERTION';
-        outcome: 'START' | 'PASS' | 'FAIL';
-        elapsedMs: number;
-    }[];
+    trace?: SmokeTraceEvent[];
     scenarios: {
         id: typeof smokeIds[number];
         status: 'PASS' | 'FAIL' | 'NOT_RUN';
@@ -69,6 +89,8 @@ export function validateSmokeReport(value: any, runId: string): SmokeReport {
             throw new Error();
         if (trace.some((item, index) => (index > 0 && item.elapsedMs < trace[index - 1]!.elapsedMs) || scenarios.find(s => s.id === item.scenarioId)?.status === 'NOT_RUN'))
             throw new Error();
+        if (trace.some(item => item.kind !== 'SCENARIO' && item.outcome === 'FAIL' && scenarios.find(s => s.id === item.scenarioId)?.status !== 'FAIL'))
+            throw new Error();
     }
     return { version: 1, runId, status: value.status, scenarios, ...(trace ? { trace } : {}) };
 }
@@ -76,9 +98,10 @@ function validateSmokeTrace(value: any): NonNullable<SmokeReport['trace']> {
     if (!Array.isArray(value) || value.length > 128)
         throw new Error();
     return value.map((event: any) => {
-        if (!event || Object.keys(event).sort().join(',') !== 'elapsedMs,kind,outcome,scenarioId' || !smokeIds.includes(event.scenarioId) || !['SCENARIO', 'ACTION', 'ASSERTION'].includes(event.kind) || !['START', 'PASS', 'FAIL'].includes(event.outcome) || !Number.isSafeInteger(event.elapsedMs) || event.elapsedMs < 0 || event.elapsedMs > 150000 || (event.outcome === 'START' && event.kind !== 'SCENARIO'))
+        const scenario = event?.kind === 'SCENARIO';
+        if (!event || Object.keys(event).sort().join(',') !== (scenario ? 'elapsedMs,kind,outcome,scenarioId' : 'actual,elapsedMs,expected,kind,outcome,scenarioId,target') || !smokeIds.includes(event.scenarioId) || !['SCENARIO', 'ACTION', 'ASSERTION'].includes(event.kind) || !['START', 'PASS', 'FAIL'].includes(event.outcome) || !Number.isSafeInteger(event.elapsedMs) || event.elapsedMs < 0 || event.elapsedMs > 150000 || (event.outcome === 'START' && !scenario) || (!scenario && (![...evidenceTargets, ...smokeReasons].includes(event.target) || !evidenceExpectations.includes(event.expected) || !['OBSERVED', 'NOT_OBSERVED', 'UNVERIFIED'].includes(event.actual) || (event.outcome === 'PASS') !== (event.actual === 'OBSERVED'))))
             throw new Error();
-        return { scenarioId: event.scenarioId, kind: event.kind, outcome: event.outcome, elapsedMs: event.elapsedMs };
+        return { scenarioId: event.scenarioId, kind: event.kind, outcome: event.outcome, elapsedMs: event.elapsedMs, ...(scenario ? {} : { target: event.target, expected: event.expected, actual: event.actual }) };
     });
 }
 export function publicSmokeReport(value: SmokeReport) {

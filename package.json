@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test --experimental-test-isolation=none tests/*.test.cjs",
     "qa": "node dist/cli.js",
+    "report:verify": "node scripts/review-report.cjs",
     "format": "node scripts/format.cjs",
     "format:check": "node scripts/format.cjs --check"
   },

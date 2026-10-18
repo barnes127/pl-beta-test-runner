@@ -2,7 +2,7 @@ import path from 'node:path';
 import { realpath, lstat, mkdir, readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { waitFor } from './processes';
-import { smokeIds, smokeReasons, SmokeReport } from './smoke-contract';
+import { smokeIds, smokeReasons, SmokeReport, SmokeTraceEvent } from './smoke-contract';
 const projects = '/scratch/home/PLProjects';
 class SmokeFailure extends Error {
     constructor(readonly reason: typeof smokeReasons[number]) { super(reason); }
@@ -74,7 +74,7 @@ export function pageOperation(op: string, selector: string, text: string, value:
 // Boot inspects the main workspace's project state, not a sidebar section
 // that can be below the initial viewport. Both use the same Suite projectRoot.
 // Only fixed booleans and allowlisted failure codes leave the page.
-export async function verifyBootUI(contents: Contents, verifySession: () => Promise<void>) {
+export async function verifyBootUI(contents: Contents, verifySession: () => Promise<void>, onCheck?: (reason: typeof smokeReasons[number], op: string, actual: 'OBSERVED' | 'NOT_OBSERVED' | 'UNVERIFIED') => void) {
     try {
         await verifySession();
     }
@@ -82,18 +82,23 @@ export async function verifyBootUI(contents: Contents, verifySession: () => Prom
         throw new SmokeFailure('BOOT_READINESS_LOST');
     }
     const check = async (op: string, selector: string, text: string, expected: string, reason: typeof smokeReasons[number]) => {
+        let inspected = false;
         try {
             await waitFor(async () => {
                 try {
                     const code = `(${pageOperation.toString()})(${[op, selector, text, expected].map(v => JSON.stringify(v)).join(',')})`;
-                    return await contents.executeJavaScript(code) === true;
+                    const observed = await contents.executeJavaScript(code) === true;
+                    inspected = true;
+                    return observed;
                 }
                 catch {
                     throw new SmokeFailure('BOOT_INSPECTION_FAILED');
                 }
             }, 5000);
+            onCheck?.(reason, op, 'OBSERVED');
         }
         catch (error) {
+            onCheck?.(reason, op, error instanceof SmokeFailure ? 'UNVERIFIED' : inspected ? 'NOT_OBSERVED' : 'UNVERIFIED');
             if (error instanceof SmokeFailure)
                 throw error;
             throw new SmokeFailure(reason);
@@ -106,6 +111,50 @@ export async function verifyBootUI(contents: Contents, verifySession: () => Prom
     await check('unique', state, '', '', 'BOOT_PROJECT_STATE_MISSING_OR_AMBIGUOUS');
     await check('present', state, '', '', 'BOOT_PROJECT_STATE_NOT_VISIBLE');
     await check('text', state, '', 'No project open', 'BOOT_PROJECT_STATE_NOT_EMPTY');
+}
+function evidenceTarget(selector: string, text: string): NonNullable<SmokeTraceEvent['target']> {
+    if (selector.startsWith('.recentList button.recentItem[title="'))
+        return 'RECENT_PROJECT_ITEM';
+    const exact: Record<string, NonNullable<SmokeTraceEvent['target']>> = {
+        '.topbarRight button': 'NEW_PROJECT_BUTTON',
+        '.workspaceHeader .workspaceSubtitle': 'PROJECT_CONTEXT',
+        '.nav .NavItem:nth-child(2) .navLabel': 'CODE_NAVIGATION',
+        '.nav .NavItem:nth-child(2)': 'CODE_NAVIGATION',
+        '.nav .NavItem.active .navLabel': 'ACTIVE_CODE_NAVIGATION',
+        '.workspaceHeader .workspaceTitle': 'WORKSPACE_TITLE',
+        '.emptyState': 'EMPTY_WORKSPACE',
+        '[role="dialog"] .modalTitle': 'PROJECT_MODAL',
+        '[role="dialog"]': 'PROJECT_MODAL',
+        '[role="dialog"] input[placeholder="My Project"]': 'PROJECT_NAME_INPUT',
+        '[role="dialog"] input[placeholder="Defaults to ~/PLProjects"]': 'PROJECT_ROOT_INPUT',
+        '[role="dialog"] button': 'PROJECT_CREATE_BUTTON',
+        '[role="dialog"] .errorBox': 'PROJECT_ERROR',
+        'input[placeholder="main.py"]': 'CODE_FILENAME_INPUT',
+        '.workspaceSplitSide button': 'CODE_CREATE_BUTTON',
+        '.workspaceSplitSide button.listNutton strong': 'CODE_FILE_LIST',
+        '.workspaceSplitSide button.listNutton': 'CODE_FILE_LIST',
+        'textarea.codeEditor': 'CODE_EDITOR',
+        '.codeMeta .docsDirty': 'DIRTY_STATUS',
+        '.codeMeta .docsSaved': 'SAVED_STATUS',
+        '.workspaceSplitSide .emptyState': 'EMPTY_WORKSPACE',
+        '.statusLeft > span:first-child': 'STATUS_BAR'
+    };
+    if (selector === 'button')
+        return text === 'Save File' ? 'SAVE_BUTTON' : text === 'Close File' ? 'CLOSE_BUTTON' : text === 'New Project' ? 'NEW_PROJECT_BUTTON' : 'UI_TARGET_UNMAPPED';
+    return exact[selector] ?? 'UI_TARGET_UNMAPPED';
+}
+function evidenceExpectation(op: string, value?: string): NonNullable<SmokeTraceEvent['expected']> {
+    if (['click', 'fill', 'scroll'].includes(op))
+        return 'ACTION_DISPATCHED';
+    if (value !== undefined || op === 'text')
+        return 'EXACT_FIXTURE_TEXT';
+    if (op === 'unique')
+        return 'ONE_ELEMENT';
+    if (op === 'absent' || op === 'missing')
+        return 'ELEMENT_ABSENT';
+    if (op === 'nonempty')
+        return 'NONEMPTY_STATUS';
+    return 'VISIBLE_ELEMENT';
 }
 // Stage errors deliberately discard raw UI, RPC and filesystem errors.
 export async function projectStage<T>(reason: Extract<typeof smokeReasons[number], `PROJ_${string}`>, step: () => Promise<T>): Promise<T> {
@@ -142,9 +191,9 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
     const trace: NonNullable<SmokeReport['trace']> = [];
     const started = performance.now();
     let activeScenario: typeof smokeIds[number] | undefined;
-    const record = (kind: 'SCENARIO' | 'ACTION' | 'ASSERTION', outcome: 'START' | 'PASS' | 'FAIL') => {
+    const record = (kind: 'SCENARIO' | 'ACTION' | 'ASSERTION', outcome: 'START' | 'PASS' | 'FAIL', target?: SmokeTraceEvent['target'], expected?: SmokeTraceEvent['expected'], actual?: SmokeTraceEvent['actual']) => {
         if (activeScenario && trace.length < 128)
-            trace.push({ scenarioId: activeScenario, kind, outcome, elapsedMs: Math.min(150000, Math.max(0, Math.ceil(performance.now() - started))) });
+            trace.push({ scenarioId: activeScenario, kind, outcome, elapsedMs: Math.min(150000, Math.max(0, Math.ceil(performance.now() - started))), ...(kind === 'SCENARIO' ? {} : { target: target!, expected: expected!, actual: actual! }) });
     };
     let failed = false;
     const operation = async (op: string, selector: string, text = '', value = '') => {
@@ -156,34 +205,59 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         }
     };
     const see = async (selector: string, text = '', value?: string, op = 'present') => {
+        let inspected = false;
+        const target = evidenceTarget(selector, text);
+        const expected = evidenceExpectation(op, value ?? (text ? '' : undefined));
         try {
-            await waitFor(() => operation(value === undefined ? op : 'text', selector, text, value ?? ''), 5000);
-            record('ASSERTION', 'PASS');
+            await waitFor(async () => {
+                const found = await operation(value === undefined ? op : 'text', selector, text, value ?? '');
+                inspected = true;
+                return found;
+            }, 5000);
+            record('ASSERTION', 'PASS', target, expected, 'OBSERVED');
         }
         catch (error) {
-            record('ASSERTION', 'FAIL');
+            record('ASSERTION', 'FAIL', target, expected, error instanceof SmokeFailure ? 'UNVERIFIED' : inspected ? 'NOT_OBSERVED' : 'UNVERIFIED');
             if (error instanceof SmokeFailure)
                 throw error;
             throw new SmokeFailure('UI_ASSERTION_FAILED');
         }
     };
     const act = async (op: string, selector: string, text = '', value = '') => {
+        const target = evidenceTarget(selector, text);
+        let inspected = false;
         // Revalidate the current owned window, snapshot, effective preferences,
         // bridge and lease permit before each UI mutation.
         try {
             await verifySession();
         }
         catch {
-            record('ACTION', 'FAIL');
+            record('ACTION', 'FAIL', target, 'ACTION_DISPATCHED', 'UNVERIFIED');
             throw new SmokeFailure('READINESS_LOST');
         }
         try {
-            if (!await operation(op, selector, text, value))
+            const acted = await operation(op, selector, text, value);
+            inspected = true;
+            if (!acted)
                 throw new SmokeFailure('UI_ACTION_FAILED');
-            record('ACTION', 'PASS');
+            record('ACTION', 'PASS', target, 'ACTION_DISPATCHED', 'OBSERVED');
         }
         catch (error) {
-            record('ACTION', 'FAIL');
+            record('ACTION', 'FAIL', target, 'ACTION_DISPATCHED', inspected ? 'NOT_OBSERVED' : 'UNVERIFIED');
+            throw error;
+        }
+    };
+    const oracle = async (target: NonNullable<SmokeTraceEvent['target']>, expected: NonNullable<SmokeTraceEvent['expected']>, check: () => Promise<boolean>) => {
+        let observed: boolean | undefined;
+        try {
+            observed = await check();
+            record('ASSERTION', observed ? 'PASS' : 'FAIL', target, expected, observed ? 'OBSERVED' : 'NOT_OBSERVED');
+            if (!observed)
+                throw new SmokeFailure('SCRATCH_ASSERTION_FAILED');
+        }
+        catch (error) {
+            if (observed === undefined)
+                record('ASSERTION', 'FAIL', target, expected, 'UNVERIFIED');
             throw error;
         }
     };
@@ -218,7 +292,7 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         await see(selector, text);
     };
     const steps: (() => Promise<void>)[] = [];
-    steps[0] = () => verifyBootUI(contents, verifySession);
+    steps[0] = () => verifyBootUI(contents, verifySession, (reason, op, actual) => record('ASSERTION', actual === 'OBSERVED' ? 'PASS' : 'FAIL', reason, evidenceExpectation(op, op === 'text' ? '' : undefined), actual));
     steps[1] = async () => {
         await see('.nav .NavItem:nth-child(2) .navLabel', 'Code IDE');
         await act('click', '.nav .NavItem:nth-child(2)');
@@ -238,16 +312,14 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
                     throw error;
                 await mkdir(projects, { mode: 0o700 });
             }
-            if (await realpath(projects) !== projects || (await readdir(projects)).length !== 0)
-                throw new Error();
+            await oracle('SCRATCH_PROJECT_ROOT', 'SCRATCH_CONTAINED', async () => await realpath(projects) === projects && (await readdir(projects)).length === 0);
         });
         await createProject(name);
         const bytes = await projectStage('PROJ_MANIFEST_INVALID', async () => {
             await assertSmokePath(manifest);
             const bytes = await readFile(manifest);
             const parsed = JSON.parse(bytes.toString());
-            if (parsed.name !== name || parsed.schemaVersion !== 1)
-                throw new Error();
+            await oracle('PROJECT_MANIFEST', 'MANIFEST_NAME_SCHEMA_MATCH', async () => parsed.name === name && parsed.schemaVersion === 1);
             return bytes;
         });
         // Negative UI path remains mandatory: visible error plus independent
@@ -257,12 +329,10 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         await projectStage('PROJ_DUPLICATE_ERROR_NOT_VISIBLE', () => see('[role="dialog"] .errorBox', '', undefined, 'nonempty'));
         await projectStage('PROJ_DUPLICATE_MANIFEST_CHANGED', async () => {
             await assertSmokePath(manifest);
-            if (createHash('sha256').update(await readFile(manifest)).digest('hex') !== createHash('sha256').update(bytes).digest('hex'))
-                throw new Error();
+            await oracle('DUPLICATE_MANIFEST', 'MANIFEST_UNCHANGED', async () => createHash('sha256').update(await readFile(manifest)).digest('hex') === createHash('sha256').update(bytes).digest('hex'));
         });
         await projectStage('PROJ_DUPLICATE_DIRECTORY_COUNT_CHANGED', async () => {
-            if ((await readdir(projects)).length !== 1)
-                throw new Error();
+            await oracle('PROJECT_DIRECTORY_COUNT', 'DIRECTORY_COUNT_UNCHANGED', async () => (await readdir(projects)).length === 1);
         });
         await projectStage('PROJ_DUPLICATE_CONTEXT_CHANGED', () => projectContext(project));
         await projectStage('PROJ_DUPLICATE_CANCEL_FAILED', () => button('Cancel', '[role="dialog"] '));
@@ -289,8 +359,7 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         await persistStage('PERSIST_SAVED_STATE_MISSING', () => seeScrolled('.codeMeta .docsSaved', 'Saved'));
         await persistStage('PERSIST_SCRATCH_PATH_INVALID', () => assertSmokePath(file));
         await persistStage('PERSIST_SAVED_BYTES_MISMATCH', async () => {
-            if (await readFile(file, 'utf8') !== content)
-                throw new Error();
+            await oracle('SAVED_FILE_BYTES', 'EXACT_FIXTURE_BYTES', async () => await readFile(file, 'utf8') === content);
         });
         await persistStage('PERSIST_CLOSE_ACTION_FAILED', () => button('Close File'));
         await persistStage('PERSIST_EDITOR_NOT_CLOSED', () => waitFor(() => operation('missing', editor), 5000));
@@ -303,8 +372,7 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         });
         await persistStage('PERSIST_SCRATCH_PATH_INVALID', () => assertSmokePath(file));
         await persistStage('PERSIST_REOPEN_BYTES_MISMATCH', async () => {
-            if (await readFile(file, 'utf8') !== content)
-                throw new Error();
+            await oracle('REOPENED_FILE_BYTES', 'EXACT_FIXTURE_BYTES', async () => await readFile(file, 'utf8') === content);
         });
     };
     steps[4] = async () => {
@@ -323,8 +391,7 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         catch {
             throw new SmokeFailure('UI_ASSERTION_FAILED');
         }
-        if (await diskContent() !== content)
-            throw new SmokeFailure('SCRATCH_ASSERTION_FAILED');
+        await oracle('REOPENED_FILE_BYTES', 'EXACT_FIXTURE_BYTES', async () => await diskContent() === content);
     };
     for (const [index, id] of smokeIds.entries()) {
         if (failed) {
@@ -341,7 +408,9 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         }
         catch (error) {
             failed = true;
-            scenarios.push({ id, status: 'FAIL', reason: error instanceof SmokeFailure ? error.reason : 'SCRATCH_ASSERTION_FAILED', durationMs: Math.min(150000, Math.max(1, Math.ceil(performance.now() - scenarioStarted))) });
+            const reason = error instanceof SmokeFailure ? error.reason : 'SCRATCH_ASSERTION_FAILED';
+            scenarios.push({ id, status: 'FAIL', reason, durationMs: Math.min(150000, Math.max(1, Math.ceil(performance.now() - scenarioStarted))) });
+            record('ASSERTION', 'FAIL', reason, 'STAGE_CONTRACT', 'UNVERIFIED');
             record('SCENARIO', 'FAIL');
         }
     }

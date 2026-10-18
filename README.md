@@ -67,7 +67,7 @@ The launcher checks both listener PIDs, source preload and security preferences,
 actual Electron version, isolated storage paths, and a read-only visible New
 Project check. It stops gracefully, falls back to bounded owned-process shutdown,
 verifies released ports, and cleans only marked scratch. Ordinary launch keeps GUI mutation scenarios
-disabled; explicit smoke mode is separately gated as described below. No screenshots, traces, HAR,
+disabled; explicit smoke mode is separately gated as described below. No screenshots, HAR,
 raw stdout/stderr, window URLs or RPC tokens are retained. Trusted isolation
 preflight stderr is classified in bounded memory only; raw text is discarded. A process lease left
 by an unconfirmed shutdown blocks automatic cleanup across runner restarts.
@@ -94,14 +94,17 @@ completed all five scenarios; local unit/fake-DOM results are not a substitute
 for that evidence. See the [Batch 2 handoff](docs/batch-2-handoff.md) for the
 owner's actual results. Packaged mode is unsupported.
 
-`pnpm qa run` writes an immutable JSON and self-contained HTML report under
+`pnpm qa run` writes a JSON and self-contained HTML report under
 `artifacts/reports/<run-id>/` after process shutdown and scratch cleanup are
 assessed. The private reports root has an ownership marker; an unmarked or
 symlinked path is refused. The CLI returns relative report paths. Reports show
-scenario durations, fixed failure codes, a bounded trace of action/assertion
-outcomes, build fingerprints, reproduction steps, and the separate automated
-isolation and formal-review states. Screenshot capture is omitted because the
-runner cannot prove that arbitrary failure-window text is safe to retain.
+scenario durations, fixed step/action/expected/observed codes, scratch-file
+oracles, categorized failures, build fingerprints, reproduction steps, and the
+separate automated isolation and formal-review states. The report includes a
+bounded registry inventory and exact capability mappings. `UNMAPPED` project
+tests and an unverified whole-product behavior denominator stay explicit.
+Screenshot capture is blocked because the runner cannot prove that arbitrary
+failure-window text is safe to retain.
 Failure or blocked reports contain no raw app output, DOM text, paths, tokens or
 environment values. An uncertain shutdown or cleanup yields overall BLOCKED,
 even when the smoke assertions passed. Reports are intentionally retained until
@@ -109,7 +112,10 @@ the owner reviews/removes them; the runner never deletes a retained process leas
 
 A safe deterministic report failure check that reads no Suite source is
 `pnpm qa run --config /dev/null`. It exits 2 with a CONFIG/BLOCKED report and
-does not start Electron. Run a real smoke/report check in a normal Pop!_OS
+does not start Electron. Check a new report's schema, companion HTML and file
+ownership with `pnpm report:verify artifacts/reports/<run-id>/report.json`.
+The checker prints only sanitized status, reason, failed step and coverage
+counts. Run a real smoke/report check in a normal Pop!_OS
 terminal with `pnpm qa run` after `pnpm build`, `pnpm qa doctor` and
 `pnpm qa isolation-check`. See [Batch 3 handoff](docs/batch-3-handoff.md).
 
@@ -119,12 +125,9 @@ raw details withheld. Read explicit isolation and mutation fields after exit 0.
 `run` requires all runtime gates and reports fixed per-scenario statuses.
 A scenario failure stops subsequent scenarios and still triggers owned cleanup.
 
-Conventional Git now works: use `git status` and `git diff`. The owner established
-a `.git` repository after the original session. Historical `.runner-git` is
-preserved and ignored, but no longer used. No commits or pushes were made during
-acceptance completion. This managed Codex workspace can read `.git` but cannot
-write its index, so the Batch 2 checkpoint commit must be made in the owner's
-normal terminal after reviewing the combined Batch 2/3 worktree.
+The owner checkpointed Batch 2 and initial Batch 3 reporting at `9ef3527` on
+`main`. This Batch 3 completion work remains uncommitted for owner review; no
+push or Suite repository change is part of the runner workflow.
 
 Runner dependencies were originally installed from an independent cached offline
 store under `/tmp` (three packages, zero downloaded); that store is not required

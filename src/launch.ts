@@ -11,6 +11,7 @@ import { prepareRuntime } from './runtime-files';
 import { spawnOwned, stopOwned, waitFor } from './processes';
 import { validateSessionResult } from './lifecycle-diagnostics';
 import { SmokeReport } from './smoke-contract';
+import { RegistryInventory } from './coverage';
 export interface LaunchObservation {
     runId?: string;
     build?: {
@@ -24,6 +25,8 @@ export interface LaunchObservation {
     shutdownComplete?: boolean;
     cleanupVerified?: boolean;
     retained?: boolean;
+    appVersion?: string;
+    registry?: RegistryInventory;
 }
 async function readValidatedBuild(file: string): Promise<NonNullable<LaunchObservation['build']>> {
     const raw: unknown = JSON.parse(await readFile(file, 'utf8'));
@@ -58,6 +61,14 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
             throw lifecycleError('DISPLAY_STARTUP_FAILED');
         }
         const target = await prepareRuntime(config, scratch);
+        if (observation) {
+            const stagedPackage = JSON.parse(await readFile(path.join(target, 'package.json'), 'utf8')) as {
+                version?: unknown;
+            };
+            if (typeof stagedPackage.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(stagedPackage.version) || stagedPackage.version.length > 32)
+                throw lifecycleError('RESULT_INVALID');
+            observation.appVersion = stagedPackage.version;
+        }
         let build: NonNullable<LaunchObservation['build']> | undefined;
         if (observation) {
             build = await readValidatedBuild(path.join(scratch.directory, 'build-evidence.json'));

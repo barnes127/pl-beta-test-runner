@@ -250,7 +250,7 @@ async function projectFixture(options={}) {
    if(state.duplicateDone&&!options.persistence)throw new Error('Stop test after project scenario');
    if(options.lostPersistReadiness&&state.duplicateDone)throw new Error('SECRET');
   });
-  return options.persistence?{report,state}:report;
+  return options.persistence||options.probeBackendUi?{report,state}:report;
  }
  finally {for(const m of mocks.reverse())m.mock.restore();}
 }
@@ -261,6 +261,15 @@ test('project UI flow passes with offscreen sidebar, visible exact workspace con
  assert.ok(report.trace.every(e=>!('selector' in e)&&!('value' in e)));
  assert.equal(report.scenarios[3].status,'FAIL'); // fixture intentionally stops after project validation
  validateSmokeReport(report,runId);assert.equal(JSON.stringify(publicSmokeReport(report)).includes('SECRET'),false);
+});
+test('mocked backend success and manifest availability cannot pass when the visible project context stays wrong',async()=>{
+ const {report,state}=await projectFixture({wrongContext:true,probeBackendUi:true});
+ assert.equal(state.created,true); // the controlled fixture exposes the backend-success path
+ assert.equal(report.scenarios[2].status,'FAIL');
+ assert.equal(report.scenarios[2].reason,'PROJ_CONTEXT_NOT_UPDATED');
+ assert.ok(report.trace.some(e=>e.scenarioId===smokeIds[2]&&e.target==='PROJECT_CONTEXT'&&e.expected==='EXACT_FIXTURE_TEXT'&&e.actual==='NOT_OBSERVED'));
+ assert.ok(report.trace.some(e=>e.scenarioId===smokeIds[2]&&e.target==='PROJ_CONTEXT_NOT_UPDATED'&&e.outcome==='FAIL'));
+ validateSmokeReport(report,runId);
 });
 for(const [options,reason] of [
  [{unsafeScratch:true},'PROJ_SCRATCH_ROOT_INVALID'],[{lostProjectReadiness:true},'PROJ_READINESS_LOST'],[{duplicateCreateFails:true},'PROJ_DUPLICATE_CREATE_FAILED'],

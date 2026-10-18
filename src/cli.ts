@@ -10,6 +10,7 @@ import { assertApprovedLaunchTarget } from './launch-authorization';
 import { launch } from './launch';
 import { LaunchObservation } from './launch';
 import { makeRunReport, writeRunReport } from './report';
+import { inspectCapabilityRegistry } from './coverage';
 async function main() {
     assertRuntime(process.versions.node, process.env.npm_config_user_agent);
     const [command, ...args] = process.argv.slice(2);
@@ -37,13 +38,33 @@ async function main() {
         const observation: LaunchObservation = {};
         let result: Awaited<ReturnType<typeof launch>> | undefined;
         let failure: unknown;
+        let registryBefore: Awaited<ReturnType<typeof inspectCapabilityRegistry>> | undefined;
+        let targetRoot: string | undefined;
         try {
             const config = await loadConfig(args[1] ?? path.join(root, 'config/example.target.json'));
             await assertApprovedLaunchTarget(config.targetRoot, root);
+            targetRoot = config.targetRoot;
+            try {
+                registryBefore = await inspectCapabilityRegistry(config.targetRoot);
+            }
+            catch {
+                throw new RunnerError('CONFIG', 'Capability registry could not be verified.');
+            }
             result = await launch(config, root, true, observation);
         }
         catch (error) {
             failure = error;
+        }
+        if (registryBefore && targetRoot) {
+            try {
+                const after = await inspectCapabilityRegistry(targetRoot);
+                if (after.digest !== registryBefore.digest)
+                    throw new Error();
+                observation.registry = registryBefore;
+            }
+            catch {
+                failure = new RunnerError('CONFIG', 'Capability registry changed or became unavailable during the run.');
+            }
         }
         let report;
         let files;

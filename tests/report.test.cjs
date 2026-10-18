@@ -39,7 +39,7 @@ test('scenario failure after verified cleanup is FAIL with fixed reproduction an
  assert.equal(report.overall,'FAIL');assert.equal(report.failure.reasonCode,'PERSIST_SAVED_BYTES_MISMATCH');
  assert.equal(report.failure.category,'PERSISTENCE');assert.equal(report.evidence.reproduction.command,'pnpm qa run');
  assert.equal(report.evidence.reproduction.scenarioId,smokeIds[3]);
- assert.equal(report.scenarios[4].result,'NOT_RUN');assert.equal(report.evidence.screenshot,'OMITTED_CONTENT_SAFETY_UNVERIFIED');
+ assert.equal(report.scenarios[4].result,'NOT_RUN');assert.equal(report.evidence.screenshot.status,'OMITTED_CAPTURE_FAILED');
  assert.ok(!JSON.stringify(report).includes('/home/'));
 });
 test('a passing smoke never overrides incomplete shutdown, cleanup, build or trace',()=>{
@@ -125,5 +125,44 @@ test('reports stay under a marked private runner artifact root and refuse aliase
  await assert.rejects(writeRunReport(runner,{...report,runId:'../../SECRET'}));
  await assert.rejects(reviewRunReport(runner,'../../SECRET/report.json'));
  await fs.appendFile(path.join(runner,files.html),'SECRET');
+ await assert.rejects(reviewRunReport(runner,files.json));
+});
+
+test('unverified screenshot claims cannot be smuggled into a report',async t=>{
+ const base=await fs.mkdtemp(path.join(os.tmpdir(),'pl-report-image-refusal-'));
+ t.after(()=>fs.rm(base,{recursive:true,force:true}));
+ const runner=path.join(base,'runner');await fs.mkdir(runner);
+ const failed=makeRunReport(observed({smoke:failingSmoke()}),undefined,lifecycleError('SMOKE_SCENARIO_FAILED'));
+ for(const screenshot of [
+  {status:'CAPTURED',path:'failure.png'},
+  {status:'CAPTURED',path:'../../private.png'},
+  {status:'CAPTURED',path:'failure.png',width:1280,height:800},
+  {status:'CAPTURED',path:'failure.png',bytes:9000000},
+  {status:'CAPTURED',path:'failure.png',windowId:'WRONG_WINDOW'},
+  {status:'CAPTURED',path:'failure.png',nonce:'EXPIRED'},
+  {status:'CAPTURED',path:'failure.png',source:'UNVERIFIED'},
+  {status:'CAPTURED',path:'failure.png',safety:'FAILED'},
+  'failure.png',
+  'data:image/png;base64,SYNTHETIC_TOKEN_LOOKING_CONTENT'
+ ]){
+  const forged=structuredClone(failed);forged.evidence.screenshot=screenshot;
+  assert.throws(()=>validateRunReport(forged));
+  await assert.rejects(writeRunReport(runner,forged));
+ }
+ assert.equal(failed.overall,'FAIL');
+ assert.equal(failed.evidence.screenshot.status,'OMITTED_CAPTURE_FAILED');
+ const files=await writeRunReport(runner,failed);
+ const image=path.join(runner,'artifacts','reports',runId,'failure.png');
+ const outside=path.join(base,'outside.png');await fs.writeFile(outside,Buffer.from('partial image'));
+ await fs.symlink(outside,image);
+ await assert.rejects(reviewRunReport(runner,files.json));
+ await fs.unlink(image);
+ const review=await reviewRunReport(runner,files.json);
+ assert.equal(review.overall,'FAIL');
+ assert.equal(review.screenshot.status,'OMITTED_CAPTURE_FAILED');
+ assert.equal((await fs.readFile(outside)).toString(),'partial image');
+ const tampered=JSON.parse(await fs.readFile(path.join(runner,files.json),'utf8'));
+ tampered.evidence.screenshot={status:'CAPTURED',path:'failure.png'};
+ await fs.writeFile(path.join(runner,files.json),JSON.stringify(tampered));
  await assert.rejects(reviewRunReport(runner,files.json));
 });

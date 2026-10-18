@@ -23,9 +23,11 @@ export async function spawnOwned(command: string, args: string[], options: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stderrSink?: (chunk: Buffer) => void;
+    ipc?: boolean;
 }): Promise<OwnedProcess> {
     // No inherited environment, shell, stdin, stdout or stderr evidence.
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false, detached: true, stdio: options.stderrSink ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false, detached: true,
+        stdio: options.ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : options.stderrSink ? ['ignore', 'ignore', 'pipe'] : 'ignore' });
     if (options.stderrSink)
         child.stderr!.on('data', options.stderrSink);
     await new Promise<void>((resolve, reject) => {

@@ -12,6 +12,7 @@ import { spawnOwned, stopOwned, waitFor } from './processes';
 import { validateSessionResult } from './lifecycle-diagnostics';
 import { SmokeReport } from './smoke-contract';
 import { RegistryInventory } from './coverage';
+import { readScratchScreenshot, omittedScreenshot, ScreenshotRecord } from './screenshot';
 export interface LaunchObservation {
     runId?: string;
     build?: {
@@ -27,6 +28,11 @@ export interface LaunchObservation {
     retained?: boolean;
     appVersion?: string;
     registry?: RegistryInventory;
+    screenshot?: {
+        record: ScreenshotRecord;
+        png?: Buffer;
+    };
+    evidenceProbe?: boolean;
 }
 async function readValidatedBuild(file: string): Promise<NonNullable<LaunchObservation['build']>> {
     const raw: unknown = JSON.parse(await readFile(file, 'utf8'));
@@ -39,10 +45,12 @@ async function readValidatedBuild(file: string): Promise<NonNullable<LaunchObser
 }
 // Default lifecycle is non-mutating. Explicit smoke mode additionally gates
 // scratch-only actions behind fresh readiness, isolation and listener ownership.
-export async function launch(config: TargetConfig, runnerRoot: string, smoke = false, observation?: LaunchObservation) {
+export async function launch(config: TargetConfig, runnerRoot: string, smoke = false, observation?: LaunchObservation, evidenceProbe = false) {
     validateConfig(config);
-    if (typeof smoke !== 'boolean')
+    if (typeof smoke !== 'boolean' || typeof evidenceProbe !== 'boolean' || (evidenceProbe && !smoke))
         throw new RunnerError('CONFIG', 'Unsupported run mode.');
+    if (observation)
+        observation.evidenceProbe = evidenceProbe;
     if (smoke)
         await assertApprovedLaunchTarget(config.targetRoot, runnerRoot);
     const checked = await doctor(config);
@@ -75,7 +83,7 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
             observation.build = build;
         }
         if (smoke)
-            await writeFile(path.join(scratch.directory, 'inputs/smoke-plan.json'), JSON.stringify({ version: 1, runId: scratch.nonce, suite: 'batch-2-v1', isolationReview: 'PENDING' }), { flag: 'wx', mode: 0o600 });
+            await writeFile(path.join(scratch.directory, 'inputs/smoke-plan.json'), JSON.stringify({ version: 2, runId: scratch.nonce, suite: 'batch-2-v1', isolationReview: 'PENDING', evidenceProbe }), { flag: 'wx', mode: 0o600 });
         const args = [...sandboxArgs(scratch.directory, path.join(runnerRoot, 'dist'), await realpath(process.execPath)),
             '--ro-bind', target, '/target', '--ro-bind', path.dirname(checked.electronExecutable), '/electron',
             '--', '/runtime/node', '/runner/sandbox-session.js'];
@@ -107,6 +115,11 @@ export async function launch(config: TargetConfig, runnerRoot: string, smoke = f
         if (observation) {
             observation.shutdownComplete = result.shutdownComplete;
             observation.smoke = result.smoke;
+            const failedScenario = result.smoke?.scenarios.find(item => item.status === 'FAIL')?.id;
+            if (failedScenario && result.shutdownComplete)
+                observation.screenshot = result.screenshotTransfer
+                    ? await readScratchScreenshot(scratch.directory, scratch.nonce, failedScenario, result.screenshotTransfer)
+                    : { record: omittedScreenshot(scratch.nonce, failedScenario, 'OMITTED_CAPTURE_FAILED', 'TRANSFER_INVALID') };
         }
         if (result.status === 'BLOCKED') {
             const error = lifecycleError(result.diagnostic!.reasonCode);

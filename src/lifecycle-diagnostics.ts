@@ -31,12 +31,13 @@ export interface SessionResult {
     guiMutations: boolean;
     smoke?: SmokeReport;
     diagnostic?: LifecycleDiagnostic;
+    screenshotTransfer?: string;
 }
 export function validateSessionResult(value: unknown, runId: string, exitCode: number | null, smokeExpected = false): SessionResult {
     if (!value || typeof value !== 'object')
         throw new Error();
     const v = value as SessionResult;
-    if (Object.keys(v).some(key => !['version', 'runId', 'status', 'shutdownComplete', 'guiMutations', 'diagnostic', 'smoke'].includes(key)) || v.version !== 1 || v.runId !== runId || typeof v.guiMutations !== 'boolean' || (!smokeExpected && v.guiMutations) || typeof v.shutdownComplete !== 'boolean')
+    if (Object.keys(v).some(key => !['version', 'runId', 'status', 'shutdownComplete', 'guiMutations', 'diagnostic', 'smoke', 'screenshotTransfer'].includes(key)) || v.version !== 1 || v.runId !== runId || typeof v.guiMutations !== 'boolean' || (!smokeExpected && v.guiMutations) || typeof v.shutdownComplete !== 'boolean')
         throw new Error();
     const smoke = v.smoke === undefined ? undefined : validateSmokeReport(v.smoke, runId);
     if ((!smokeExpected && smoke) || (v.status === 'LIFECYCLE_VERIFIED' && smokeExpected && (!v.guiMutations || smoke?.status !== 'PASS')))
@@ -47,5 +48,7 @@ export function validateSessionResult(value: unknown, runId: string, exitCode: n
         throw new Error();
     if (v.status === 'BLOCKED' && !v.diagnostic)
         throw new Error();
-    return { version: 1, runId, status: v.status, shutdownComplete: v.shutdownComplete, guiMutations: v.guiMutations, ...(smoke ? { smoke } : {}), ...(v.diagnostic ? { diagnostic: sanitizeLifecycle(v.diagnostic) } : {}) };
+    if (v.screenshotTransfer !== undefined && (!/^evidence-[A-Za-z0-9]{6}$/.test(v.screenshotTransfer) || !v.shutdownComplete || !v.guiMutations || smoke?.status !== 'FAIL' || v.status !== 'BLOCKED'))
+        throw new Error();
+    return { version: 1, runId, status: v.status, shutdownComplete: v.shutdownComplete, guiMutations: v.guiMutations, ...(smoke ? { smoke } : {}), ...(v.diagnostic ? { diagnostic: sanitizeLifecycle(v.diagnostic) } : {}), ...(v.screenshotTransfer ? { screenshotTransfer: v.screenshotTransfer } : {}) };
 }

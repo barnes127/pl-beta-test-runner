@@ -16,7 +16,7 @@ async function main() {
     const [command, ...args] = process.argv.slice(2);
     const root = path.resolve(__dirname, '..');
     if (command === 'help' && args.length === 0)
-        return { commands: ['environment', 'doctor', 'isolation-check', 'launch', 'list', 'run'], usage: 'pnpm qa <command> [--config <file>]' };
+        return { commands: ['environment', 'doctor', 'isolation-check', 'launch', 'list', 'run', 'evidence-check'], usage: 'pnpm qa <command> [--config <file>]' };
     if (args.length && (args.length !== 2 || args[0] !== '--config' || !args[1]))
         throw new RunnerError('CONFIG', 'Expected --config <file>; shell commands and extra arguments are unsupported.');
     if (command === 'environment' && args.length === 0)
@@ -32,9 +32,9 @@ async function main() {
             await cleanupScratch(scratch);
         }
     }
-    if (command !== 'doctor' && command !== 'launch' && command !== 'run')
+    if (command !== 'doctor' && command !== 'launch' && command !== 'run' && command !== 'evidence-check')
         throw new RunnerError('CONFIG', 'Unknown command; use help.');
-    if (command === 'run') {
+    if (command === 'run' || command === 'evidence-check') {
         const observation: LaunchObservation = {};
         let result: Awaited<ReturnType<typeof launch>> | undefined;
         let failure: unknown;
@@ -50,7 +50,7 @@ async function main() {
             catch {
                 throw new RunnerError('CONFIG', 'Capability registry could not be verified.');
             }
-            result = await launch(config, root, true, observation);
+            result = await launch(config, root, true, observation, command === 'evidence-check');
         }
         catch (error) {
             failure = error;
@@ -70,7 +70,7 @@ async function main() {
         let files;
         try {
             report = makeRunReport(observation, result, failure);
-            files = await writeRunReport(root, report);
+            files = await writeRunReport(root, report, typeof report.evidence.screenshot !== 'string' && report.evidence.screenshot.status === 'CAPTURED' ? observation.screenshot?.png : undefined);
         }
         catch {
             throw new RunnerError('LAUNCH_BLOCKED', 'Report output could not be safely written.');

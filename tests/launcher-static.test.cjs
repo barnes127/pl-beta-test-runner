@@ -105,7 +105,7 @@ async function sessionFixture(options,callback) {
  mock.method(fs,'access',async()=>{}),
  mock.method(fs,'readFile',async file=>{
    if(file.endsWith('expected-namespaces.json')) return JSON.stringify({runId:'fixture'});
-   if(file.endsWith('smoke-plan.json')) return JSON.stringify({version:1,runId:'fixture',suite:'batch-2-v1',isolationReview:options.invalidPlan?'APPROVED':'PENDING'});
+   if(file.endsWith('smoke-plan.json')) return JSON.stringify({version:2,runId:'fixture',suite:'batch-2-v1',isolationReview:options.invalidPlan?'APPROVED':'PENDING',evidenceProbe:false});
    if(file.endsWith('smoke-result.json')) {
      assert.equal(permitted,true);
      if(options.pendingSmoke) throw Object.assign(new Error('SECRET'),{code:'ENOENT'});
@@ -114,13 +114,14 @@ async function sessionFixture(options,callback) {
    return JSON.stringify({status:'READY',securityVerified:true,preloadVerified:true,preloadDeclaredVerified:true,preloadBridgeVerified:true,preloadInspection:'PRESENT',electron:'41.10.6',...options.readiness});
  }),
  mock.method(fs,'rename',async(from,to)=>{assert.equal(to,'/scratch/smoke-permit.json');events.push('permit');permitted=true;}),
+ mock.method(fs,'mkdtemp',async()=>'/scratch/evidence-ABC123'),
  mock.method(fs,'writeFile',async(file,data)=>{
    if(file==='/scratch/smoke-permit.tmp') {assert.equal(events.filter(e=>e==='proof').length,2);assert.equal(events.at(-1),'listener');}
    if(file==='/scratch/stop-electron') {if(options.stopRequestFails) throw new Error('SECRET');if(!options.hangElectron) children[2].child.exitCode=options.exitFailure?2:0;}
    if(file==='/scratch/session-result.json') status=JSON.parse(data);
  }),
  mock.method(fs,'readdir',async()=>[String(process.pid),'1']),
- mock.method(proc,'spawnOwned',async(command)=>{const child={pid:children.length+10,start:'1',child:{exitCode:null,signalCode:null}};children.push(child);return child;}),
+ mock.method(proc,'spawnOwned',async(command,args,spawnOptions)=>{const child={pid:children.length+10,start:'1',child:{exitCode:null,signalCode:null,on(){}}};if(command==='/electron/electron') assert.equal(spawnOptions.ipc,true);children.push(child);return child;}),
  mock.method(proc,'assertPortFree',async()=>{}),mock.method(proc,'assertListenerOwner',async()=>{events.push('listener');if(options.loseOwnershipAtPermit && events.filter(e=>e==='listener').length===3) throw require('../dist/errors').lifecycleError('RPC_OWNERSHIP_FAILED');}),
  mock.method(proc,'waitFor',async condition=>{if(!await condition()) throw new Error('timeout');}),
  mock.method(proc,'stopOwned',async child=>{stopped.push(child.pid);child.child.exitCode=0;if(options.stopFails && child===children[2]) throw new Error('SECRET');})];

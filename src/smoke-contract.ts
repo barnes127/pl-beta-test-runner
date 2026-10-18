@@ -4,6 +4,7 @@ export const smokeReasons = [
     'UI_ASSERTION_FAILED', 'UI_ACTION_FAILED', 'SCRATCH_ASSERTION_FAILED', 'READINESS_LOST',
     'BOOT_READINESS_LOST', 'BOOT_INSPECTION_FAILED', 'BOOT_NEW_PROJECT_MISSING_OR_AMBIGUOUS', 'BOOT_NEW_PROJECT_NOT_VISIBLE',
     'BOOT_PROJECT_STATE_MISSING_OR_AMBIGUOUS', 'BOOT_PROJECT_STATE_NOT_VISIBLE', 'BOOT_PROJECT_STATE_NOT_EMPTY',
+    'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH',
     'PROJ_READINESS_LOST', 'PROJ_SCRATCH_ROOT_INVALID', 'PROJ_NEW_PROJECT_ACTION_FAILED', 'PROJ_MODAL_NOT_READY',
     'PROJ_NAME_INPUT_FAILED', 'PROJ_ROOT_INPUT_FAILED', 'PROJ_CREATE_ACTION_FAILED', 'PROJ_CREATE_REJECTED',
     'PROJ_MODAL_DID_NOT_CLOSE', 'PROJ_CONTEXT_NOT_UPDATED', 'PROJ_MANIFEST_INVALID',
@@ -55,12 +56,27 @@ export interface SmokeReport {
     }[];
 }
 export function validateSmokePlan(value: any, runId: string) {
-    if (!value || Object.keys(value).sort().join(',') !== 'isolationReview,runId,suite,version' || value.version !== 1 || value.runId !== runId || value.suite !== 'batch-2-v1' || value.isolationReview !== 'PENDING')
+    if (!value || Object.keys(value).sort().join(',') !== 'evidenceProbe,isolationReview,runId,suite,version' || value.version !== 2 || value.runId !== runId || value.suite !== 'batch-2-v1' || value.isolationReview !== 'PENDING' || typeof value.evidenceProbe !== 'boolean')
         throw new Error();
+    return value as {
+        version: 2;
+        runId: string;
+        suite: 'batch-2-v1';
+        isolationReview: 'PENDING';
+        evidenceProbe: boolean;
+    };
 }
 export function validateSmokePermit(value: any, runId: string) {
-    if (!value || Object.keys(value).sort().join(',') !== 'runId,version' || value.version !== 1 || value.runId !== runId)
+    if (!value || Object.keys(value).sort().join(',') !== 'electronPid,electronStart,rendererPid,rendererStart,runId,version' || value.version !== 2 || value.runId !== runId || !Number.isSafeInteger(value.electronPid) || value.electronPid < 1 || !Number.isSafeInteger(value.rendererPid) || value.rendererPid < 1 || !/^\d+$/.test(value.electronStart) || !/^\d+$/.test(value.rendererStart))
         throw new Error();
+    return value as {
+        version: 2;
+        runId: string;
+        electronPid: number;
+        electronStart: string;
+        rendererPid: number;
+        rendererStart: string;
+    };
 }
 export function validateSmokeReport(value: any, runId: string): SmokeReport {
     if (!value || Object.keys(value).some(k => !['runId', 'scenarios', 'status', 'version', 'trace'].includes(k)) || value.version !== 1 || value.runId !== runId || !['PASS', 'FAIL'].includes(value.status) || !Array.isArray(value.scenarios) || value.scenarios.length !== smokeIds.length)

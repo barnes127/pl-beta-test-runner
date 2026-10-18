@@ -67,7 +67,7 @@ The launcher checks both listener PIDs, source preload and security preferences,
 actual Electron version, isolated storage paths, and a read-only visible New
 Project check. It stops gracefully, falls back to bounded owned-process shutdown,
 verifies released ports, and cleans only marked scratch. Ordinary launch keeps GUI mutation scenarios
-disabled; explicit smoke mode is separately gated as described below. No screenshots, HAR,
+disabled; explicit smoke mode is separately gated as described below. No HAR,
 raw stdout/stderr, window URLs or RPC tokens are retained. Trusted isolation
 preflight stderr is classified in bounded memory only; raw text is discarded. A process lease left
 by an unconfirmed shutdown blocks automatic cleanup across runner restarts.
@@ -103,8 +103,25 @@ oracles, categorized failures, build fingerprints, reproduction steps, and the
 separate automated isolation and formal-review states. The report includes a
 bounded registry inventory and exact capability mappings. `UNMAPPED` project
 tests and an unverified whole-product behavior denominator stay explicit.
-Screenshot capture is blocked because the runner cannot prove that arbitrary
-failure-window text is safe to retain.
+The owner-approved screenshot policy covers only the fixed `pnpm qa
+evidence-check` BOOT negative control in the reviewed synthetic Suite snapshot.
+It deliberately expects an absent project context after genuine UI readiness,
+then captures the **actual Suite BrowserWindow** before shutdown. No project is
+created and no editor content is entered. Capture requires the current
+nonce-bound permit, exact owned window/listeners, private mounts/network/display,
+approved snapshot, no scratch projects, fixed origin, and a limited before/after
+check for unexpected UI content. Ordinary smoke failures omit the screenshot
+with `CAPTURE_SCOPE_UNAPPROVED`. Capture is also omitted for any ambiguous
+state or failed safety gate. This is a trusted synthetic-session boundary; it
+does not classify every pixel or authorize capture of real projects, accounts,
+arbitrary sessions or the host desktop. Images stay local, under the private
+marked report directory, and are never uploaded. The controlled negative
+control is **not** evidence of a Creators Suite defect. Actual Electron image
+capture remains pending owner-host validation; see the [Batch 3 handoff](docs/batch-3-handoff.md).
+The empty-project Copilot drawer has one disabled, unchecked checkbox whose
+browser-default value is `on`; the eligibility check recognizes only that exact
+inert control. Other input values and unexpected UI surfaces still refuse
+capture with fixed sanitized reasons.
 Failure or blocked reports contain no raw app output, DOM text, paths, tokens or
 environment values. An uncertain shutdown or cleanup yields overall BLOCKED,
 even when the smoke assertions passed. Reports are intentionally retained until
@@ -119,15 +136,24 @@ counts. Run a real smoke/report check in a normal Pop!_OS
 terminal with `pnpm qa run` after `pnpm build`, `pnpm qa doctor` and
 `pnpm qa isolation-check`. See [Batch 3 handoff](docs/batch-3-handoff.md).
 
+On the approved Pop!_OS host, `pnpm qa evidence-check` runs the fixed negative
+control and should exit 3 with overall FAIL after verified cleanup. Inspect
+the returned report path with `pnpm report:verify
+artifacts/reports/<run-id>/report.json`. A `CAPTURED` record must point to a
+private PNG beside the JSON and HTML and match its digest and dimensions;
+an omission reason means screenshot acceptance is still pending. The command
+accepts no selector, project path, script or capture destination.
+
 CLI outputs JSON. Exit 0 means requested checks completed, 2 means invalid config/
 runtime, 3 means blocked safety/infrastructure, 4 means unexpected failure with
 raw details withheld. Read explicit isolation and mutation fields after exit 0.
 `run` requires all runtime gates and reports fixed per-scenario statuses.
 A scenario failure stops subsequent scenarios and still triggers owned cleanup.
 
-The owner checkpointed Batch 2 and initial Batch 3 reporting at `9ef3527` on
-`main`. This Batch 3 completion work remains uncommitted for owner review; no
-push or Suite repository change is part of the runner workflow.
+The local `main` checkpoint inspected for this review is `f94654d`, newer than
+the historical `9ef3527` baseline. Changes from this final screenshot review
+remain uncommitted for owner review; no push or Suite repository change is part
+of the runner workflow.
 
 Runner dependencies were originally installed from an independent cached offline
 store under `/tmp` (three packages, zero downloaded); that store is not required

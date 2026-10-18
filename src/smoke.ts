@@ -177,7 +177,7 @@ export async function persistStage<T>(reason: Extract<typeof smokeReasons[number
         throw new SmokeFailure(error instanceof SmokeFailure && error.reason === 'READINESS_LOST' ? 'PERSIST_READINESS_LOST' : reason);
     }
 }
-export async function runSmokeScenarios(contents: Contents, runId: string, verifySession: () => Promise<void>): Promise<SmokeReport> {
+export async function runSmokeScenarios(contents: Contents, runId: string, verifySession: () => Promise<void>, evidenceProbe = false): Promise<SmokeReport> {
     if (!/^[a-f0-9-]{36}$/.test(runId))
         throw new SmokeFailure('SCRATCH_ASSERTION_FAILED');
     const name = `plqa-${runId.slice(0, 12)}`;
@@ -292,7 +292,21 @@ export async function runSmokeScenarios(contents: Contents, runId: string, verif
         await see(selector, text);
     };
     const steps: (() => Promise<void>)[] = [];
-    steps[0] = () => verifyBootUI(contents, verifySession, (reason, op, actual) => record('ASSERTION', actual === 'OBSERVED' ? 'PASS' : 'FAIL', reason, evidenceExpectation(op, op === 'text' ? '' : undefined), actual));
+    steps[0] = async () => {
+        await verifyBootUI(contents, verifySession, (reason, op, actual) => record('ASSERTION', actual === 'OBSERVED' ? 'PASS' : 'FAIL', reason, evidenceExpectation(op, op === 'text' ? '' : undefined), actual));
+        if (evidenceProbe) {
+            // Fixed owner-invoked negative control. The UI really is inspected,
+            // but the expected project context is intentionally absent. No app
+            // state or DOM is changed, and later mutating scenarios do not run.
+            let absent = false;
+            try {
+                absent = await contents.executeJavaScript(`document.querySelector('.workspaceHeader .workspaceSubtitle')?.textContent?.trim() !== ${JSON.stringify(`Project: ${project}`)}`) === true;
+            }
+            catch { /* Unavailable inspection remains an unverified failure. */ }
+            record('ASSERTION', 'FAIL', 'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH', 'EXACT_FIXTURE_TEXT', absent ? 'NOT_OBSERVED' : 'UNVERIFIED');
+            throw new SmokeFailure('BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH');
+        }
+    };
     steps[1] = async () => {
         await see('.nav .NavItem:nth-child(2) .navLabel', 'Code IDE');
         await act('click', '.nav .NavItem:nth-child(2)');

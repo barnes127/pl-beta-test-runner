@@ -1,11 +1,12 @@
 import path from 'node:path';
-import { lstat, realpath, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, realpath, mkdir, readFile, writeFile, open, unlink, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { RunnerError } from './errors';
 import { LaunchObservation } from './launch';
 import { smokeIds, smokeReasons, validateSmokeReport, SmokeReport } from './smoke-contract';
 import { lifecycleReasons } from './lifecycle-diagnostics';
 import { CoverageSummary, makeCoverage, validateCoverage } from './coverage';
+import { approvedScreenshotSnapshot, omittedScreenshot, ScreenshotRecord, validatePng, validateScreenshotRecord } from './screenshot';
 const names = ['Application boot', 'Workspace navigation', 'New project and duplicate rejection', 'Code document persistence', 'Reopen project context'] as const;
 const categories = ['UI', 'PERSISTENCE', 'SAFETY', 'LIFECYCLE', 'INFRASTRUCTURE', 'CONFIGURATION', 'INTERNAL'] as const;
 const statuses = ['PASS', 'FAIL', 'BLOCKED'] as const;
@@ -41,7 +42,7 @@ export interface RunReport {
         automation: 'ELECTRON_WEB_CONTENTS';
         isolationProof: 'RUNTIME_VERIFIED' | 'NOT_VERIFIED';
     };
-    executionMode: 'ISOLATED_SCRATCH_SMOKE';
+    executionMode: 'ISOLATED_SCRATCH_SMOKE' | 'ISOLATED_EVIDENCE_PROBE';
     isolationReview: 'PENDING';
     overall: typeof statuses[number];
     scenarios: Scenario[];
@@ -56,10 +57,10 @@ export interface RunReport {
         category: Category;
     } | null;
     evidence: {
-        screenshot: 'OMITTED_CONTENT_SAFETY_UNVERIFIED';
+        screenshot: ScreenshotRecord | 'OMITTED_CONTENT_SAFETY_UNVERIFIED';
         trace: NonNullable<SmokeReport['trace']>;
         reproduction: {
-            command: 'pnpm qa run';
+            command: 'pnpm qa run' | 'pnpm qa evidence-check';
             scenarioId: ScenarioId | null;
             actions: string[];
         } | null;
@@ -72,6 +73,7 @@ const actions: Record<ScenarioId, string[]> = {
     'PL-QA-PERSIST-001': ['Create Code IDE file through UI', 'Edit and save unique content', 'Check scratch bytes', 'Close and reopen file'],
     'PL-QA-PROJ-002': ['Switch to alternate scratch project', 'Reopen original from recents', 'Check context and saved file']
 };
+const probeActions = ['Start the isolated evidence check', 'Verify the visible ready window', 'Observe the intentionally absent synthetic project context'];
 function category(reason: string): Category {
     if (reason.includes('BYTES') || reason.includes('MANIFEST') || reason.includes('DIRECTORY_COUNT'))
         return 'PERSISTENCE';
@@ -134,13 +136,28 @@ export function makeRunReport(observation: LaunchObservation, success: unknown, 
             ...(item?.reason ? { reasonCode: item.reason, failureType: category(item.reason) } : {}) };
     });
     const failingId = scenarioFailure?.id ?? null;
+    let screenshot: ScreenshotRecord;
+    if (!failingId)
+        screenshot = omittedScreenshot(runId, null, 'OMITTED_NOT_APPLICABLE', 'NO_GUI_FAILURE');
+    else if (!shutdown || !cleanup)
+        screenshot = omittedScreenshot(runId, failingId, 'OMITTED_SAFETY_GATE', 'CLEANUP_UNVERIFIED');
+    else {
+        try {
+            const candidate = validateScreenshotRecord(observation.screenshot?.record, runId, failingId);
+            screenshot = candidate.status === 'CAPTURED' && !observation.screenshot?.png
+                ? omittedScreenshot(runId, failingId, 'OMITTED_CAPTURE_FAILED', 'TRANSFER_INVALID') : candidate;
+        }
+        catch {
+            screenshot = omittedScreenshot(runId, failingId, 'OMITTED_CAPTURE_FAILED', 'TRANSFER_INVALID');
+        }
+    }
     const report: RunReport = {
         version: 2, runId, timestamp, runnerVersion: '0.1.0', appVersion: verifiedVersion, appBuild: safeBuild,
         environment: { platform: ['linux', 'darwin', 'win32'].includes(process.platform) ? process.platform as 'linux' | 'darwin' | 'win32' : 'other', arch: ['x64', 'arm64'].includes(process.arch) ? process.arch as 'x64' | 'arm64' : 'other', nodeVersion: '22.12.0', electronVersion: '41.10.6', display: 'PRIVATE_XVFB_CONFIGURED', displayResolution: '1280x800x24_CONFIGURED', displayScale: 'NOT_VERIFIED', network: 'PRIVATE_LOOPBACK_CONFIGURED', automation: 'ELECTRON_WEB_CONTENTS', isolationProof: shutdown && !!smoke ? 'RUNTIME_VERIFIED' : 'NOT_VERIFIED' },
-        executionMode: 'ISOLATED_SCRATCH_SMOKE', isolationReview: 'PENDING', overall, scenarios, coverage,
+        executionMode: observation.evidenceProbe ? 'ISOLATED_EVIDENCE_PROBE' : 'ISOLATED_SCRATCH_SMOKE', isolationReview: 'PENDING', overall, scenarios, coverage,
         lifecycle: { shutdown: shutdown ? 'VERIFIED' : 'UNVERIFIED', cleanup: cleanup ? 'VERIFIED' : observation.retained ? 'RETAINED_FOR_REVIEW' : 'UNVERIFIED', finalContainment: shutdown ? 'VERIFIED' : 'UNVERIFIED' },
         failure: reasonCode ? { reasonCode, category: category(reasonCode) } : null,
-        evidence: { screenshot: 'OMITTED_CONTENT_SAFETY_UNVERIFIED', trace: smoke?.trace ?? [], reproduction: reasonCode ? { command: 'pnpm qa run', scenarioId: failingId, actions: failingId ? actions[failingId] : ['Run the fixed isolated smoke command'] } : null }
+        evidence: { screenshot, trace: smoke?.trace ?? [], reproduction: reasonCode ? { command: observation.evidenceProbe ? 'pnpm qa evidence-check' : 'pnpm qa run', scenarioId: failingId, actions: observation.evidenceProbe && failingId === smokeIds[0] ? probeActions : failingId ? actions[failingId] : ['Run the fixed isolated smoke command'] } : null }
     };
     return validateRunReport(report);
 }
@@ -148,7 +165,11 @@ export function validateRunReport(value: unknown): RunReport {
     if (!exact(value, ['version', 'runId', 'timestamp', 'runnerVersion', 'appVersion', 'appBuild', 'environment', 'executionMode', 'isolationReview', 'overall', 'scenarios', 'coverage', 'lifecycle', 'failure', 'evidence']))
         throw new Error('REPORT_RESULT_INVALID');
     const v = value as RunReport;
-    if (v.version !== 2 || !uuid.test(v.runId) || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v.timestamp) || Number.isNaN(Date.parse(v.timestamp)) || v.runnerVersion !== '0.1.0' || !(v.appVersion === 'NOT_VERIFIED' || typeof v.appVersion === 'string' && v.appVersion.length <= 32 && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(v.appVersion)) || v.executionMode !== 'ISOLATED_SCRATCH_SMOKE' || v.isolationReview !== 'PENDING' || !statuses.includes(v.overall))
+    if (v.version !== 2 || !uuid.test(v.runId) || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v.timestamp) || Number.isNaN(Date.parse(v.timestamp)) || v.runnerVersion !== '0.1.0' || !(v.appVersion === 'NOT_VERIFIED' || typeof v.appVersion === 'string' && v.appVersion.length <= 32 && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(v.appVersion)) || !['ISOLATED_SCRATCH_SMOKE', 'ISOLATED_EVIDENCE_PROBE'].includes(v.executionMode) || v.isolationReview !== 'PENDING' || !statuses.includes(v.overall))
+        throw new Error('REPORT_RESULT_INVALID');
+    if (v.executionMode === 'ISOLATED_EVIDENCE_PROBE' && (v.overall === 'PASS' || v.scenarios.some((scenario, index) => index > 0 && scenario.result !== 'NOT_RUN')))
+        throw new Error('REPORT_RESULT_INVALID');
+    if (v.executionMode === 'ISOLATED_SCRATCH_SMOKE' && v.scenarios.some(scenario => scenario.reasonCode === 'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH'))
         throw new Error('REPORT_RESULT_INVALID');
     if (v.appBuild !== null && (!v.appBuild || !exact(v.appBuild, ['sourceDigest', 'assetDigest', 'desktopDigest', 'snapshotDigest', 'provenance']) || ![v.appBuild.sourceDigest, v.appBuild.assetDigest, v.appBuild.desktopDigest, v.appBuild.snapshotDigest].every(x => hash.test(x)) || v.appBuild.provenance !== 'NOT_PROVEN'))
         throw new Error('REPORT_RESULT_INVALID');
@@ -184,8 +205,21 @@ export function validateRunReport(value: unknown): RunReport {
         throw new Error('REPORT_RESULT_INVALID');
     if (v.overall === 'FAIL' && !v.evidence?.trace?.some(t => t.scenarioId === v.scenarios.find(s => s.result === 'FAIL')?.id && t.kind === 'ASSERTION' && t.outcome === 'FAIL' && t.target === v.failure?.reasonCode))
         throw new Error('REPORT_RESULT_INVALID');
-    if (!exact(v.evidence, ['screenshot', 'trace', 'reproduction']) || v.evidence.screenshot !== 'OMITTED_CONTENT_SAFETY_UNVERIFIED' || !Array.isArray(v.evidence.trace) || v.evidence.trace.length > 128)
+    if (!exact(v.evidence, ['screenshot', 'trace', 'reproduction']) || !Array.isArray(v.evidence.trace) || v.evidence.trace.length > 128)
         throw new Error('REPORT_RESULT_INVALID');
+    if (v.evidence.screenshot !== 'OMITTED_CONTENT_SAFETY_UNVERIFIED') {
+        let screenshot: ScreenshotRecord;
+        try {
+            screenshot = validateScreenshotRecord(v.evidence.screenshot, v.runId, v.scenarios.find(s => s.result === 'FAIL')?.id ?? null);
+        }
+        catch {
+            throw new Error('REPORT_RESULT_INVALID');
+        }
+        if (screenshot.status === 'CAPTURED' && (v.overall !== 'FAIL' || v.executionMode !== 'ISOLATED_EVIDENCE_PROBE' || v.failure?.reasonCode !== 'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH' || screenshot.scenarioId !== smokeIds[0] || !v.evidence.trace.some(item => item.target === 'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH' && item.kind === 'ASSERTION' && item.outcome === 'FAIL' && item.expected === 'EXACT_FIXTURE_TEXT' && item.actual === 'NOT_OBSERVED') || life.shutdown !== 'VERIFIED' || life.cleanup !== 'VERIFIED' || life.finalContainment !== 'VERIFIED' || env.isolationProof !== 'RUNTIME_VERIFIED' || v.appBuild?.snapshotDigest !== approvedScreenshotSnapshot))
+            throw new Error('REPORT_RESULT_INVALID');
+        if (v.overall === 'PASS' && screenshot.status !== 'OMITTED_NOT_APPLICABLE')
+            throw new Error('REPORT_RESULT_INVALID');
+    }
     if (v.overall !== 'BLOCKED' && (v.appBuild === null || v.appVersion === 'NOT_VERIFIED' || v.coverage.registry !== 'INSPECTED_CHECKOUT' || env.isolationProof !== 'RUNTIME_VERIFIED' || v.evidence.trace.length === 0 || v.scenarios.some(s => s.result !== 'NOT_RUN' && !validMs(s.durationMs)) || v.scenarios.filter(s => s.result !== 'NOT_RUN').some(s => !v.evidence.trace.some(t => t.scenarioId === s.id && t.kind === 'ASSERTION' && t.actual !== undefined))))
         throw new Error('REPORT_RESULT_INVALID');
     // Reuse the nonce-bound child validator for every trace entry and its
@@ -196,8 +230,8 @@ export function validateRunReport(value: unknown): RunReport {
     if (v.failure === null ? rep !== null : !exact(rep, ['command', 'scenarioId', 'actions']))
         throw new Error('REPORT_RESULT_INVALID');
     if (rep) {
-        const expected = rep.scenarioId ? actions[rep.scenarioId] : ['Run the fixed isolated smoke command'];
-        if (rep.command !== 'pnpm qa run' || (rep.scenarioId !== null && !smokeIds.includes(rep.scenarioId)) || !Array.isArray(rep.actions) || rep.actions.length !== expected?.length || rep.actions.some((action, index) => typeof action !== 'string' || action !== expected?.[index]))
+        const expected = v.executionMode === 'ISOLATED_EVIDENCE_PROBE' && rep.scenarioId === smokeIds[0] ? probeActions : rep.scenarioId ? actions[rep.scenarioId] : ['Run the fixed isolated smoke command'];
+        if (rep.command !== (v.executionMode === 'ISOLATED_EVIDENCE_PROBE' ? 'pnpm qa evidence-check' : 'pnpm qa run') || (rep.scenarioId !== null && !smokeIds.includes(rep.scenarioId)) || !Array.isArray(rep.actions) || rep.actions.length !== expected?.length || rep.actions.some((action, index) => typeof action !== 'string' || action !== expected?.[index]))
             throw new Error('REPORT_RESULT_INVALID');
     }
     return v;
@@ -214,7 +248,11 @@ export function renderHtml(value: unknown): string {
     const trace = r.evidence.trace.map(e => `<tr><td>${esc(e.scenarioId)}</td><td>${esc(e.kind)}</td><td>${esc(e.target ?? '—')}</td><td>${esc(e.expected ?? '—')}</td><td>${esc(e.actual ?? '—')}</td><td>${esc(e.elapsedMs)} ms</td></tr>`).join('');
     const coverage = r.coverage.capabilities.map(c => `<tr><td>${esc(c.id)}</td><td>${esc(c.registryStatus)}</td><td>${esc(c.testIds.join(', ') || '—')}</td><td>${esc(c.coverage)}</td></tr>`).join('');
     const mappings = r.coverage.scenarios.map(s => `<tr><td>${esc(s.id)}</td><td>${esc(s.capabilityIds.join(', ') || 'UNMAPPED')}</td><td>${esc(s.result)}</td><td>${esc(s.mode)}</td></tr>`).join('');
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'"><title>PL QA ${esc(r.overall)}</title></head><body><h1>PL Beta Test Runner — ${esc(r.overall)}</h1><p>Run ${esc(r.runId)} · ${esc(r.timestamp)} · runner ${esc(r.runnerVersion)} · Suite ${esc(r.appVersion)}</p><p>Failure: ${esc(r.failure?.reasonCode ?? 'None')} (${esc(r.failure?.category ?? '—')})</p><h2>Scenarios</h2><table border="1"><thead><tr><th>ID</th><th>Name</th><th>Result</th><th>Duration</th><th>Reason</th><th>Type</th></tr></thead><tbody>${rows}</tbody></table><h2>Environment</h2><p>${esc(r.environment.platform)}/${esc(r.environment.arch)} · Node ${esc(r.environment.nodeVersion)} · Electron ${esc(r.environment.electronVersion)} · ${esc(r.executionMode)} · ${esc(r.environment.display)} · ${esc(r.environment.displayResolution)} · scale ${esc(r.environment.displayScale)} · ${esc(r.environment.network)} · ${esc(r.environment.automation)}</p><p>Automated isolation proof: ${esc(r.environment.isolationProof)}. Formal isolation review: ${esc(r.isolationReview)}.</p><h2>Build fingerprints</h2><ul>${build}</ul><h2>Lifecycle</h2><p>Shutdown ${esc(r.lifecycle.shutdown)} · cleanup ${esc(r.lifecycle.cleanup)} · final containment ${esc(r.lifecycle.finalContainment)}</p><h2>Evidence</h2><p>Screenshot ${esc(r.evidence.screenshot)}. Step observations are fixed codes; actual values come from the executed UI and scratch oracles.</p><table border="1"><thead><tr><th>Scenario</th><th>Kind</th><th>Target / failing step</th><th>Expected</th><th>Actual</th><th>Elapsed</th></tr></thead><tbody>${trace}</tbody></table>${repro}<h2>Coverage</h2><p>Registry ${esc(r.coverage.registry)} · digest ${esc(r.coverage.registryDigest ?? 'NOT_VERIFIED')} · build binding ${esc(r.coverage.buildBinding)}. Implemented registry capabilities ${esc(r.coverage.implementedCapabilities ?? 'NOT_VERIFIED')}; applicable behavior denominator ${esc(r.coverage.denominatorReason)}. Manual coverage ${esc(r.coverage.manualCoverage)}.</p><p>Automated smoke scenarios: ${esc(r.coverage.scenarioCounts.passed)} passed / ${esc(r.coverage.scenarioCounts.executed)} executed / ${esc(r.coverage.scenarioCounts.implemented)} implemented; ${esc(r.coverage.scenarioCounts.failed)} failed, ${esc(r.coverage.scenarioCounts.blocked)} blocked, ${esc(r.coverage.scenarioCounts.skipped)} skipped. A mapped PASS validates only the listed behavior, not the entire capability.</p><table border="1"><thead><tr><th>Scenario</th><th>Capability ID(s)</th><th>Result</th><th>Mode</th></tr></thead><tbody>${mappings}</tbody></table><h3>Registry inventory</h3><table border="1"><thead><tr><th>Capability ID</th><th>Registry status</th><th>Linked smoke test(s)</th><th>Runner coverage</th></tr></thead><tbody>${coverage}</tbody></table></body></html>`;
+    const screenshot = r.evidence.screenshot;
+    const image = typeof screenshot !== 'string' && screenshot.status === 'CAPTURED' ? `<p>Screenshot ${esc(screenshot.status)} · ${esc(screenshot.scenarioId)} · ${esc(screenshot.stage)} · ${esc(screenshot.width)}×${esc(screenshot.height)} · ${esc(screenshot.bytes)} bytes · SHA-256 ${esc(screenshot.sha256)}</p><img src="${esc(screenshot.artifact)}" alt="Actual failed Creators Suite UI for ${esc(screenshot.scenarioId)}" width="${esc(screenshot.width)}" height="${esc(screenshot.height)}">` : `<p>Screenshot ${esc(typeof screenshot === 'string' ? screenshot : `${screenshot.status}: ${screenshot.reason}`)}</p>`;
+    const csp = typeof screenshot === 'string' ? "default-src 'none'" : "default-src 'none'; img-src 'self'";
+    const evidence = typeof screenshot === 'string' ? `<p>Screenshot ${esc(screenshot)}. Step observations are fixed codes; actual values come from the executed UI and scratch oracles.</p>` : `${image}<p>Step observations are fixed codes; actual values come from the executed UI and scratch oracles.</p>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><title>PL QA ${esc(r.overall)}</title></head><body><h1>PL Beta Test Runner — ${esc(r.overall)}</h1><p>Run ${esc(r.runId)} · ${esc(r.timestamp)} · runner ${esc(r.runnerVersion)} · Suite ${esc(r.appVersion)}</p><p>Failure: ${esc(r.failure?.reasonCode ?? 'None')} (${esc(r.failure?.category ?? '—')})</p><h2>Scenarios</h2><table border="1"><thead><tr><th>ID</th><th>Name</th><th>Result</th><th>Duration</th><th>Reason</th><th>Type</th></tr></thead><tbody>${rows}</tbody></table><h2>Environment</h2><p>${esc(r.environment.platform)}/${esc(r.environment.arch)} · Node ${esc(r.environment.nodeVersion)} · Electron ${esc(r.environment.electronVersion)} · ${esc(r.executionMode)} · ${esc(r.environment.display)} · ${esc(r.environment.displayResolution)} · scale ${esc(r.environment.displayScale)} · ${esc(r.environment.network)} · ${esc(r.environment.automation)}</p><p>Automated isolation proof: ${esc(r.environment.isolationProof)}. Formal isolation review: ${esc(r.isolationReview)}.</p><h2>Build fingerprints</h2><ul>${build}</ul><h2>Lifecycle</h2><p>Shutdown ${esc(r.lifecycle.shutdown)} · cleanup ${esc(r.lifecycle.cleanup)} · final containment ${esc(r.lifecycle.finalContainment)}</p><h2>Evidence</h2>${evidence}<table border="1"><thead><tr><th>Scenario</th><th>Kind</th><th>Target / failing step</th><th>Expected</th><th>Actual</th><th>Elapsed</th></tr></thead><tbody>${trace}</tbody></table>${repro}<h2>Coverage</h2><p>Registry ${esc(r.coverage.registry)} · digest ${esc(r.coverage.registryDigest ?? 'NOT_VERIFIED')} · build binding ${esc(r.coverage.buildBinding)}. Implemented registry capabilities ${esc(r.coverage.implementedCapabilities ?? 'NOT_VERIFIED')}; applicable behavior denominator ${esc(r.coverage.denominatorReason)}. Manual coverage ${esc(r.coverage.manualCoverage)}.</p><p>Automated smoke scenarios: ${esc(r.coverage.scenarioCounts.passed)} passed / ${esc(r.coverage.scenarioCounts.executed)} executed / ${esc(r.coverage.scenarioCounts.implemented)} implemented; ${esc(r.coverage.scenarioCounts.failed)} failed, ${esc(r.coverage.scenarioCounts.blocked)} blocked, ${esc(r.coverage.scenarioCounts.skipped)} skipped. A mapped PASS validates only the listed behavior, not the entire capability.</p><table border="1"><thead><tr><th>Scenario</th><th>Capability ID(s)</th><th>Result</th><th>Mode</th></tr></thead><tbody>${mappings}</tbody></table><h3>Registry inventory</h3><table border="1"><thead><tr><th>Capability ID</th><th>Registry status</th><th>Linked smoke test(s)</th><th>Runner coverage</th></tr></thead><tbody>${coverage}</tbody></table></body></html>`;
 }
 async function safeDirectory(directory: string, privateMode: boolean) {
     const info = await lstat(directory);
@@ -227,8 +265,8 @@ async function safeMarker(reports: string) {
     if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0 || info.size !== Buffer.byteLength(marker) || await realpath(filename) !== filename || await readFile(filename, 'utf8') !== marker)
         throw new Error('REPORT_PATH_UNSAFE');
 }
-export async function writeRunReport(runnerRoot: string, value: unknown) {
-    const report = validateRunReport(value);
+export async function writeRunReport(runnerRoot: string, value: unknown, screenshotBytes?: Buffer) {
+    let report = validateRunReport(value);
     const root = path.resolve(runnerRoot);
     await safeDirectory(root, false);
     const artifacts = path.join(root, 'artifacts');
@@ -254,6 +292,34 @@ export async function writeRunReport(runnerRoot: string, value: unknown) {
     const directory = path.join(reports, report.runId);
     await mkdir(directory, { mode: 0o700 });
     await safeDirectory(directory, true);
+    const screenshot = report.evidence.screenshot;
+    if (typeof screenshot !== 'string' && screenshot.status === 'CAPTURED') {
+        let imageCreated = false;
+        const imagePath = path.join(directory, screenshot.artifact!);
+        try {
+            if (!screenshotBytes)
+                throw new Error();
+            const verified = validatePng(screenshotBytes);
+            if (verified.width !== screenshot.width || verified.height !== screenshot.height || verified.bytes !== screenshot.bytes || verified.sha256 !== screenshot.sha256)
+                throw new Error();
+            const file = await open(imagePath, 'wx', 0o600);
+            imageCreated = true;
+            try {
+                await file.writeFile(screenshotBytes);
+                await file.sync();
+            }
+            finally {
+                await file.close();
+            }
+        }
+        catch {
+            if (imageCreated)
+                await unlink(imagePath);
+            report = validateRunReport({ ...report, evidence: { ...report.evidence, screenshot: omittedScreenshot(report.runId, screenshot.scenarioId, 'OMITTED_CAPTURE_FAILED', 'ARTIFACT_WRITE_FAILED') } });
+        }
+    }
+    else if (screenshotBytes)
+        throw new Error('REPORT_RESULT_INVALID');
     await writeFile(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     await writeFile(path.join(directory, 'report.html'), renderHtml(report), { flag: 'wx', mode: 0o600 });
     return { json: `artifacts/reports/${report.runId}/report.json`, html: `artifacts/reports/${report.runId}/report.html` };
@@ -280,6 +346,19 @@ export async function reviewRunReport(runnerRoot: string, relativeJson: string) 
     const report = validateRunReport(JSON.parse(await readFile(jsonPath, 'utf8')));
     if (report.runId !== match[1] || await readFile(htmlPath, 'utf8') !== renderHtml(report))
         throw new Error('REPORT_RESULT_INVALID');
+    const screenshot = report.evidence.screenshot;
+    const expectedFiles = ['report.html', 'report.json', ...(typeof screenshot !== 'string' && screenshot.status === 'CAPTURED' ? [screenshot.artifact!] : [])].sort();
+    if (JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(expectedFiles))
+        throw new Error('REPORT_PATH_UNSAFE');
+    if (typeof screenshot !== 'string' && screenshot.status === 'CAPTURED') {
+        const imagePath = path.join(directory, screenshot.artifact!);
+        const info = await lstat(imagePath);
+        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0 || info.size !== screenshot.bytes || await realpath(imagePath) !== imagePath)
+            throw new Error('REPORT_PATH_UNSAFE');
+        const image = validatePng(await readFile(imagePath));
+        if (image.width !== screenshot.width || image.height !== screenshot.height || image.bytes !== screenshot.bytes || image.sha256 !== screenshot.sha256)
+            throw new Error('REPORT_RESULT_INVALID');
+    }
     const failure = report.scenarios.find(s => s.result === 'FAIL');
     const failedStep = report.evidence.trace.find(t => t.scenarioId === failure?.id && t.kind === 'ASSERTION' && t.outcome === 'FAIL' && t.expected !== 'STAGE_CONTRACT')
         ?? report.evidence.trace.find(t => t.scenarioId === failure?.id && t.kind === 'ASSERTION' && t.outcome === 'FAIL' && t.target === failure?.reasonCode);

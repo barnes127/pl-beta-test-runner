@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs';
 import { SmokeReport, validateSmokePlan, validateSmokeReport } from './smoke-contract';
-import { access, readFile, writeFile, readdir, rename } from 'node:fs/promises';
+import { access, readFile, writeFile, readdir, rename, unlink, mkdtemp, open } from 'node:fs/promises';
+import path from 'node:path';
 import { proveInsideSandbox, verifyApplicationMounts } from './isolation-proof';
 import { spawnOwned, stopOwned, waitFor, assertPortFree, assertListenerOwner, processIdentity, OwnedProcess } from './processes';
 import { lifecycleError, RunnerError } from './errors';
 import { SessionResult, sanitizeLifecycle } from './lifecycle-diagnostics';
+import { omittedScreenshot, screenshotFile, validateScreenshotTransfer } from './screenshot';
 export async function assertNoRemainingProcesses() {
     for (const name of await readdir('/proc')) {
         if (!/^\d+$/.test(name) || Number(name) === 1 || Number(name) === process.pid)
@@ -29,6 +31,9 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
     let ready = false;
     let mutationsEnabled = false;
     let smoke: SmokeReport | undefined;
+    let screenshotMessage: unknown;
+    let screenshotMessages = 0;
+    let screenshotTransfer: string | undefined;
     try {
         runId = JSON.parse(await readFile('/isolation-inputs/expected-namespaces.json', 'utf8')).runId;
         if (smokeRequested) {
@@ -93,8 +98,12 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
             throw lifecycleError('RENDERER_STARTUP_FAILED');
         }
         try {
-            electron = await spawnOwned('/electron/electron', ['/target'], { cwd: '/scratch', env });
+            electron = await spawnOwned('/electron/electron', ['/target'], { cwd: '/scratch', env, ipc: true });
             owned.push(electron);
+            electron.child.on('message', message => {
+                screenshotMessages++;
+                screenshotMessage = message;
+            });
         }
         catch {
             throw lifecycleError('ELECTRON_STARTUP_FAILED');
@@ -130,7 +139,7 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
             verifyApplicationMounts(await readFile('/proc/self/mountinfo', 'utf8'));
             await assertListenerOwner(5173, renderer.pid, renderer.start);
             await assertListenerOwner(38741, electron.pid, electron.start);
-            await writeFile('/scratch/smoke-permit.tmp', JSON.stringify({ version: 1, runId }), { flag: 'wx', mode: 0o600 });
+            await writeFile('/scratch/smoke-permit.tmp', JSON.stringify({ version: 2, runId, electronPid: electron.pid, electronStart: electron.start, rendererPid: renderer.pid, rendererStart: renderer.start }), { flag: 'wx', mode: 0o600 });
             await rename('/scratch/smoke-permit.tmp', '/scratch/smoke-permit.json');
             mutationsEnabled = true;
             try {
@@ -212,7 +221,53 @@ export async function session(smokeRequested = existsSync('/isolation-inputs/smo
             }
         }
     }
-    const result: SessionResult = { version: 1, runId, status: failure ? 'BLOCKED' : 'LIFECYCLE_VERIFIED', shutdownComplete, guiMutations: mutationsEnabled, ...(smoke ? { smoke } : {}), ...(failure ? { diagnostic: failure.lifecycle! } : {}) };
+    if (smoke?.status === 'FAIL' && shutdownComplete) {
+        const failedScenario = smoke.scenarios.find(item => item.status === 'FAIL')!.id;
+        let screenshot: {
+            record: ReturnType<typeof omittedScreenshot>;
+            png?: Buffer;
+        } = { record: omittedScreenshot(runId, failedScenario, 'OMITTED_CAPTURE_FAILED', 'TRANSFER_INVALID') };
+        if (screenshotMessages === 1) {
+            try {
+                screenshot = validateScreenshotTransfer(screenshotMessage, runId, failedScenario);
+            }
+            catch { /* A malformed or unauthenticated IPC image is discarded. */ }
+        }
+        try {
+            const transferDirectory = await mkdtemp('/scratch/evidence-');
+            screenshotTransfer = path.basename(transferDirectory);
+            if (!/^evidence-[A-Za-z0-9]{6}$/.test(screenshotTransfer))
+                throw new Error();
+            if (screenshot.record.status === 'CAPTURED' && screenshot.png) {
+                const imagePath = path.join(transferDirectory, screenshotFile(runId));
+                let created = false;
+                try {
+                    const file = await open(imagePath, 'wx', 0o600);
+                    created = true;
+                    try {
+                        await file.writeFile(screenshot.png);
+                        await file.sync();
+                    }
+                    finally {
+                        await file.close();
+                    }
+                }
+                catch {
+                    if (created)
+                        try {
+                            await unlink(imagePath);
+                        }
+                        catch { /* Marked scratch is removed after verified cleanup. */ }
+                    screenshot = { record: omittedScreenshot(runId, failedScenario, 'OMITTED_CAPTURE_FAILED', 'ARTIFACT_WRITE_FAILED') };
+                }
+            }
+            await writeFile(path.join(transferDirectory, 'screenshot-result.json'), JSON.stringify(screenshot.record), { flag: 'wx', mode: 0o600 });
+        }
+        catch {
+            screenshotTransfer = undefined;
+        }
+    }
+    const result: SessionResult = { version: 1, runId, status: failure ? 'BLOCKED' : 'LIFECYCLE_VERIFIED', shutdownComplete, guiMutations: mutationsEnabled, ...(smoke ? { smoke } : {}), ...(failure ? { diagnostic: failure.lifecycle! } : {}), ...(screenshotTransfer ? { screenshotTransfer } : {}) };
     await writeFile('/scratch/session-result.json', JSON.stringify(result), { mode: 0o600 });
     if (failure)
         process.exitCode = 3;

@@ -10,9 +10,9 @@ const runId='12345678-1234-4234-8234-123456789abc';
 const pass=()=>({version:1,runId,status:'PASS',scenarios:smokeIds.map(id=>({id,status:'PASS'}))});
 
 test('smoke plan and permit reject stale nonce, fabricated review approval and arbitrary controls',()=>{
- const plan={version:1,runId,suite:'batch-2-v1',isolationReview:'PENDING'};
- validateSmokePlan(plan,runId);validateSmokePermit({version:1,runId},runId);
- for(const bad of [{...plan,runId:'stale'},{...plan,isolationReview:'APPROVED'},{...plan,path:'/home/SECRET'},{...plan,suite:'arbitrary-script'}]) assert.throws(()=>validateSmokePlan(bad,runId));
+ const plan={version:2,runId,suite:'batch-2-v1',isolationReview:'PENDING',evidenceProbe:false};
+ validateSmokePlan(plan,runId);validateSmokePermit({version:2,runId,electronPid:12,electronStart:'1',rendererPid:11,rendererStart:'2'},runId);
+ for(const bad of [{...plan,runId:'stale'},{...plan,isolationReview:'APPROVED'},{...plan,path:'/home/SECRET'},{...plan,suite:'arbitrary-script'},{...plan,evidenceProbe:'true'}]) assert.throws(()=>validateSmokePlan(bad,runId));
  for(const bad of [{version:1,runId:'stale'},{version:1,runId,script:'SECRET'},null]) assert.throws(()=>validateSmokePermit(bad,runId));
 });
 test('smoke evidence accepts only the fixed ordered suite and a single fail-closed stopping point',()=>{
@@ -94,7 +94,7 @@ async function bootFixture(options={}) {
  const rectHidden=()=>({width:0,height:0,top:0,left:0,right:0,bottom:0});
  if(options.hiddenButton)newProject.getBoundingClientRect=rectHidden;
  if(options.hiddenState)state.getBoundingClientRect=rectHidden;
- const context={document:{querySelectorAll:selector=>{
+ const context={document:{querySelector:selector=>selector==='.workspaceHeader .workspaceSubtitle'?state:null,querySelectorAll:selector=>{
   queries.push(selector);
   if(selector==='.topbarRight button')return options.missingButton?[]:options.ambiguousButton?[newProject,newProject]:[newProject];
   if(selector==='.workspaceHeader .workspaceSubtitle')return options.missingState?[]:options.ambiguousState?[state,state]:[state];
@@ -115,7 +115,7 @@ async function bootFixture(options={}) {
   const oldSidebar=vm.runInNewContext(`(${pageOperation.toString()})('text','.projectSummaryValue','','No project open')`,context);
   assert.equal(oldSidebar,false);
   const verify=async()=>{checks++;if(options.lostReadiness)throw new Error('SECRET');};
-  if(options.fullSuite)return await runSmokeScenarios(contents,runId,verify);
+  if(options.fullSuite)return await runSmokeScenarios(contents,runId,verify,options.evidenceProbe===true);
   await verifyBootUI(contents,verify);
   return {polls,checks,queries};
  } finally {wait.mock.restore();}
@@ -127,6 +127,12 @@ test('boot checks equivalent visible workspace state even when sidebar summary i
 });
 test('boot waits for rendering rather than failing on the first missing frame',async()=>{
  const result=await bootFixture({dynamicButton:true});assert.ok(result.polls>5);
+});
+test('fixed evidence probe observes the real initial project context and stops before GUI mutation',async()=>{
+ const report=await bootFixture({fullSuite:true,evidenceProbe:true});
+ assert.equal(report.status,'FAIL');assert.equal(report.scenarios[0].reason,'BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH');
+ assert.ok(report.scenarios.slice(1).every(item=>item.status==='NOT_RUN'));
+ assert.ok(report.trace.some(item=>item.target==='BOOT_EVIDENCE_PROBE_CONTEXT_MISMATCH'&&item.expected==='EXACT_FIXTURE_TEXT'&&item.actual==='NOT_OBSERVED'));
 });
 for(const [options,reason] of [
  [{lostReadiness:true},'BOOT_READINESS_LOST'],[{inspectionFails:true},'BOOT_INSPECTION_FAILED'],

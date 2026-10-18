@@ -1,3 +1,44 @@
+# Batch 1 — Owner runtime acceptance and checkpoint (2026-10-17)
+
+**Owner-host functional lifecycle acceptance recorded. Formal isolation review
+remains PENDING; no review approval is fabricated.** The owner supplied two real
+LIFECYCLE_VERIFIED results, both non-mutating, with matching digests below, plus
+130/130 host tests, doctor CHECKS_PASSED and six preflight stages PASS.
+
+Repository-first inspection for Batch 2 found a **clean** local runner at
+`38d0ede` (Complete Batch 1 isolated Electron launcher and runtime validation).
+That existing focused commit already checkpoints the Batch 1 implementation,
+tests, reviewed fixtures and handoffs. There were no uncommitted Batch 1 changes
+to commit. No redundant commit, amend, reset, pull or push was performed.
+The transcript contains no Git SHA; its test inventory and application digests
+are consistent with this checkpoint, not independent proof of runner-code commit
+provenance. Existing local staging independently reproduced all four digests:
+
+| Digest | Owner cycles and local staging |
+| --- | --- |
+| source | 4354da402a02815910d2b49d28a398567ed01abd3c09031270450c05d972997a |
+| renderer assets | a45ac412775fa9262bc0f6bb3490a168cf61a285e5bc1a5ee2764145cc7ea964 |
+| desktop | 21cde5bc4184881826f97b04a7edd147f62fbe1ce2469667d8dd29403ca66c74 |
+| staged snapshot | 3b99eeb81163024c110bf1827295722d20f9b15682209936c9bfbf2f1549de58 |
+
+Before Batch 2 edits: `git diff --check`, typecheck and build/regression tests
+passed (130 tests: 129 local passes, one TCP-dependent skip). Current root and
+Git toplevel both resolve to `/home/brandenbarnes/Projects/pl-beta-test-runner`;
+target realpath is `/home/brandenbarnes/Projects/pl-creators-suite`.
+Cached origin/main also points to 38d0ede. Read-only `git ls-remote origin
+refs/heads/main` failed because github.com could not resolve; a browser GitHub
+lookup also failed. The stated older remote/uncommitted state was not observed
+locally. Live remote comparison is unavailable; local source remains authoritative.
+
+The owner separately authorized Batch 2 scratch-only mutations after fresh
+runtime gates. That scoped operational authorization does not change the formal
+review field, global mutation config default or application security. See the
+[Batch 2 handoff](batch-2-handoff.md) for current changes, commands and limits.
+Historical BLOCKED records below describe earlier attempts and are superseded
+only by the specific owner-host evidence recorded here, not by local GUI proof.
+
+---
+
 # Batch 1 — BrowserWindow export compatibility repair (2026-10-17)
 
 **Repair implemented and unit-tested; runtime acceptance remains BLOCKED pending

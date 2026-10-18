@@ -1,0 +1,92 @@
+// Fixed v0.1 suite only: no caller-supplied scripts, selectors, paths or RPCs.
+export const smokeIds = ['PL-QA-BOOT-001', 'PL-QA-NAV-001', 'PL-QA-PROJ-001', 'PL-QA-PERSIST-001', 'PL-QA-PROJ-002'] as const;
+export const smokeReasons = [
+    'UI_ASSERTION_FAILED', 'UI_ACTION_FAILED', 'SCRATCH_ASSERTION_FAILED', 'READINESS_LOST',
+    'BOOT_READINESS_LOST', 'BOOT_INSPECTION_FAILED', 'BOOT_NEW_PROJECT_MISSING_OR_AMBIGUOUS', 'BOOT_NEW_PROJECT_NOT_VISIBLE',
+    'BOOT_PROJECT_STATE_MISSING_OR_AMBIGUOUS', 'BOOT_PROJECT_STATE_NOT_VISIBLE', 'BOOT_PROJECT_STATE_NOT_EMPTY',
+    'PROJ_READINESS_LOST', 'PROJ_SCRATCH_ROOT_INVALID', 'PROJ_NEW_PROJECT_ACTION_FAILED', 'PROJ_MODAL_NOT_READY',
+    'PROJ_NAME_INPUT_FAILED', 'PROJ_ROOT_INPUT_FAILED', 'PROJ_CREATE_ACTION_FAILED', 'PROJ_CREATE_REJECTED',
+    'PROJ_MODAL_DID_NOT_CLOSE', 'PROJ_CONTEXT_NOT_UPDATED', 'PROJ_MANIFEST_INVALID',
+    'PROJ_DUPLICATE_CREATE_FAILED', 'PROJ_DUPLICATE_ERROR_NOT_VISIBLE', 'PROJ_DUPLICATE_MANIFEST_CHANGED',
+    'PROJ_DUPLICATE_DIRECTORY_COUNT_CHANGED', 'PROJ_DUPLICATE_CONTEXT_CHANGED', 'PROJ_DUPLICATE_CANCEL_FAILED',
+    'PROJ_DUPLICATE_MODAL_DID_NOT_CLOSE',
+    'PERSIST_READINESS_LOST', 'PERSIST_FILE_NAME_INPUT_FAILED', 'PERSIST_CREATE_ACTION_FAILED',
+    'PERSIST_FILE_NOT_LISTED', 'PERSIST_EDITOR_NOT_OPEN', 'PERSIST_CONTENT_INPUT_FAILED',
+    'PERSIST_DIRTY_STATE_MISSING', 'PERSIST_SAVE_ACTION_FAILED', 'PERSIST_SAVED_STATE_MISSING',
+    'PERSIST_SCRATCH_PATH_INVALID', 'PERSIST_SAVED_BYTES_MISMATCH', 'PERSIST_CLOSE_ACTION_FAILED',
+    'PERSIST_EDITOR_NOT_CLOSED', 'PERSIST_CLOSED_FILE_NOT_LISTED', 'PERSIST_REOPEN_ACTION_FAILED',
+    'PERSIST_REOPEN_CONTENT_MISMATCH', 'PERSIST_REOPEN_BYTES_MISMATCH'
+] as const;
+export interface SmokeReport {
+    version: 1;
+    runId: string;
+    status: 'PASS' | 'FAIL';
+    trace?: {
+        scenarioId: typeof smokeIds[number];
+        kind: 'SCENARIO' | 'ACTION' | 'ASSERTION';
+        outcome: 'START' | 'PASS' | 'FAIL';
+        elapsedMs: number;
+    }[];
+    scenarios: {
+        id: typeof smokeIds[number];
+        status: 'PASS' | 'FAIL' | 'NOT_RUN';
+        reason?: typeof smokeReasons[number];
+        durationMs?: number;
+    }[];
+}
+export function validateSmokePlan(value: any, runId: string) {
+    if (!value || Object.keys(value).sort().join(',') !== 'isolationReview,runId,suite,version' || value.version !== 1 || value.runId !== runId || value.suite !== 'batch-2-v1' || value.isolationReview !== 'PENDING')
+        throw new Error();
+}
+export function validateSmokePermit(value: any, runId: string) {
+    if (!value || Object.keys(value).sort().join(',') !== 'runId,version' || value.version !== 1 || value.runId !== runId)
+        throw new Error();
+}
+export function validateSmokeReport(value: any, runId: string): SmokeReport {
+    if (!value || Object.keys(value).some(k => !['runId', 'scenarios', 'status', 'version', 'trace'].includes(k)) || value.version !== 1 || value.runId !== runId || !['PASS', 'FAIL'].includes(value.status) || !Array.isArray(value.scenarios) || value.scenarios.length !== smokeIds.length)
+        throw new Error();
+    const trace = value.trace === undefined ? undefined : validateSmokeTrace(value.trace);
+    let failed = false;
+    const scenarios: SmokeReport['scenarios'] = value.scenarios.map((item: any, index: number) => {
+        if (!item || Object.keys(item).some(k => !['id', 'status', 'reason', 'durationMs'].includes(k)) || item.id !== smokeIds[index] || !['PASS', 'FAIL', 'NOT_RUN'].includes(item.status) || (item.durationMs !== undefined && (!Number.isSafeInteger(item.durationMs) || item.durationMs < 0 || item.durationMs > 150000 || (item.status === 'NOT_RUN' && item.durationMs !== 0))))
+            throw new Error();
+        if (item.status === 'FAIL') {
+            if (failed || !smokeReasons.includes(item.reason) || (item.reason.startsWith('BOOT_') && item.id !== smokeIds[0]) || (item.reason.startsWith('PROJ_') && item.id !== smokeIds[2] && item.id !== smokeIds[4]) || (item.reason.startsWith('PERSIST_') && item.id !== smokeIds[3]))
+                throw new Error();
+            failed = true;
+        }
+        else if (item.reason !== undefined || (failed ? item.status !== 'NOT_RUN' : item.status !== 'PASS'))
+            throw new Error();
+        return { id: item.id, status: item.status, ...(item.reason ? { reason: item.reason } : {}), ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}) };
+    });
+    if ((value.status === 'FAIL') !== failed)
+        throw new Error();
+    if (trace) {
+        const executed = scenarios.filter(item => item.status !== 'NOT_RUN');
+        const starts = trace.filter(item => item.kind === 'SCENARIO' && item.outcome === 'START');
+        const finishes = trace.filter(item => item.kind === 'SCENARIO' && item.outcome !== 'START');
+        if (starts.length !== executed.length || finishes.length !== executed.length || executed.some((item, index) => starts[index]?.scenarioId !== item.id || finishes[index]?.scenarioId !== item.id || finishes[index]?.outcome !== item.status))
+            throw new Error();
+        if (trace.some((item, index) => (index > 0 && item.elapsedMs < trace[index - 1]!.elapsedMs) || scenarios.find(s => s.id === item.scenarioId)?.status === 'NOT_RUN'))
+            throw new Error();
+    }
+    return { version: 1, runId, status: value.status, scenarios, ...(trace ? { trace } : {}) };
+}
+function validateSmokeTrace(value: any): NonNullable<SmokeReport['trace']> {
+    if (!Array.isArray(value) || value.length > 128)
+        throw new Error();
+    return value.map((event: any) => {
+        if (!event || Object.keys(event).sort().join(',') !== 'elapsedMs,kind,outcome,scenarioId' || !smokeIds.includes(event.scenarioId) || !['SCENARIO', 'ACTION', 'ASSERTION'].includes(event.kind) || !['START', 'PASS', 'FAIL'].includes(event.outcome) || !Number.isSafeInteger(event.elapsedMs) || event.elapsedMs < 0 || event.elapsedMs > 150000 || (event.outcome === 'START' && event.kind !== 'SCENARIO'))
+            throw new Error();
+        return { scenarioId: event.scenarioId, kind: event.kind, outcome: event.outcome, elapsedMs: event.elapsedMs };
+    });
+}
+export function publicSmokeReport(value: SmokeReport) {
+    try {
+        const checked = validateSmokeReport(value, value.runId);
+        return { status: checked.status, scenarios: checked.scenarios };
+    }
+    catch {
+        return { status: 'INVALID', scenarios: [] };
+    }
+}

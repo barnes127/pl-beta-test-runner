@@ -1,4 +1,6 @@
+import { SmokeReport, validateSmokeReport } from './smoke-contract';
 export const lifecycleReasons = [
+    'SMOKE_GATE_INVALID', 'SMOKE_SCENARIO_FAILED', 'SMOKE_TIMEOUT',
     'PRELOAD_REVIEW_MISMATCH', 'PRELOAD_SNAPSHOT_INVALID',
     'PRELOAD_DECLARATION_MISSING', 'PRELOAD_DECLARATION_MISMATCH', 'PRELOAD_FILE_INVALID', 'PRELOAD_DECLARATION_CAPTURE_UNAVAILABLE',
     'PRELOAD_DECLARATION_UNVERIFIED', 'PRELOAD_EXECUTION_FAILED',
@@ -26,14 +28,18 @@ export interface SessionResult {
     runId: string;
     status: 'LIFECYCLE_VERIFIED' | 'BLOCKED';
     shutdownComplete: boolean;
-    guiMutations: false;
+    guiMutations: boolean;
+    smoke?: SmokeReport;
     diagnostic?: LifecycleDiagnostic;
 }
-export function validateSessionResult(value: unknown, runId: string, exitCode: number | null): SessionResult {
+export function validateSessionResult(value: unknown, runId: string, exitCode: number | null, smokeExpected = false): SessionResult {
     if (!value || typeof value !== 'object')
         throw new Error();
     const v = value as SessionResult;
-    if (Object.keys(v).some(key => !['version', 'runId', 'status', 'shutdownComplete', 'guiMutations', 'diagnostic'].includes(key)) || v.version !== 1 || v.runId !== runId || v.guiMutations !== false || typeof v.shutdownComplete !== 'boolean')
+    if (Object.keys(v).some(key => !['version', 'runId', 'status', 'shutdownComplete', 'guiMutations', 'diagnostic', 'smoke'].includes(key)) || v.version !== 1 || v.runId !== runId || typeof v.guiMutations !== 'boolean' || (!smokeExpected && v.guiMutations) || typeof v.shutdownComplete !== 'boolean')
+        throw new Error();
+    const smoke = v.smoke === undefined ? undefined : validateSmokeReport(v.smoke, runId);
+    if ((!smokeExpected && smoke) || (v.status === 'LIFECYCLE_VERIFIED' && smokeExpected && (!v.guiMutations || smoke?.status !== 'PASS')))
         throw new Error();
     if (v.status === 'LIFECYCLE_VERIFIED' && (exitCode !== 0 || !v.shutdownComplete || v.diagnostic !== undefined))
         throw new Error();
@@ -41,5 +47,5 @@ export function validateSessionResult(value: unknown, runId: string, exitCode: n
         throw new Error();
     if (v.status === 'BLOCKED' && !v.diagnostic)
         throw new Error();
-    return { version: 1, runId, status: v.status, shutdownComplete: v.shutdownComplete, guiMutations: false, ...(v.diagnostic ? { diagnostic: sanitizeLifecycle(v.diagnostic) } : {}) };
+    return { version: 1, runId, status: v.status, shutdownComplete: v.shutdownComplete, guiMutations: v.guiMutations, ...(smoke ? { smoke } : {}), ...(v.diagnostic ? { diagnostic: sanitizeLifecycle(v.diagnostic) } : {}) };
 }

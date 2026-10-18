@@ -1,4 +1,6 @@
-import { access, readFile, writeFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { SmokeReport, validateSmokePlan, validateSmokeReport } from './smoke-contract';
+import { access, readFile, writeFile, readdir, rename } from 'node:fs/promises';
 import { proveInsideSandbox, verifyApplicationMounts } from './isolation-proof';
 import { spawnOwned, stopOwned, waitFor, assertPortFree, assertListenerOwner, processIdentity, OwnedProcess } from './processes';
 import { lifecycleError, RunnerError } from './errors';
@@ -18,15 +20,25 @@ export async function assertNoRemainingProcesses() {
             throw lifecycleError('UNEXPECTED_PROCESS_REMAINS');
     }
 }
-export async function session() {
+export async function session(smokeRequested = existsSync('/isolation-inputs/smoke-plan.json')) {
     let runId = '';
     let shutdownComplete = false;
     let failure: RunnerError | undefined;
     const owned: OwnedProcess[] = [];
     let electron: OwnedProcess | undefined;
     let ready = false;
+    let mutationsEnabled = false;
+    let smoke: SmokeReport | undefined;
     try {
         runId = JSON.parse(await readFile('/isolation-inputs/expected-namespaces.json', 'utf8')).runId;
+        if (smokeRequested) {
+            try {
+                validateSmokePlan(JSON.parse(await readFile('/isolation-inputs/smoke-plan.json', 'utf8')), runId);
+            }
+            catch {
+                throw lifecycleError('SMOKE_GATE_INVALID');
+            }
+        }
         try {
             await proveInsideSandbox();
             verifyApplicationMounts(await readFile('/proc/self/mountinfo', 'utf8'));
@@ -111,6 +123,44 @@ export async function session() {
             return true;
         }, 15000);
         ready = true;
+        if (smokeRequested) {
+            // Permit follows actual Electron readiness, exact listener ownership
+            // and a fresh full filesystem/network proof in this namespace.
+            await proveInsideSandbox();
+            verifyApplicationMounts(await readFile('/proc/self/mountinfo', 'utf8'));
+            await assertListenerOwner(5173, renderer.pid, renderer.start);
+            await assertListenerOwner(38741, electron.pid, electron.start);
+            await writeFile('/scratch/smoke-permit.tmp', JSON.stringify({ version: 1, runId }), { flag: 'wx', mode: 0o600 });
+            await rename('/scratch/smoke-permit.tmp', '/scratch/smoke-permit.json');
+            mutationsEnabled = true;
+            try {
+                await waitFor(async () => {
+                    if (electron!.child.exitCode !== null || electron!.child.signalCode !== null)
+                        throw lifecycleError('ELECTRON_EXIT_FAILED');
+                    let text;
+                    try {
+                        text = await readFile('/scratch/smoke-result.json', 'utf8');
+                    }
+                    catch (error) {
+                        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+                            return false;
+                        throw lifecycleError('SMOKE_GATE_INVALID');
+                    }
+                    try {
+                        smoke = validateSmokeReport(JSON.parse(text), runId);
+                    }
+                    catch {
+                        throw lifecycleError('SMOKE_GATE_INVALID');
+                    }
+                    return true;
+                }, 105000);
+            }
+            catch (error) {
+                throw error instanceof RunnerError && error.lifecycle ? error : lifecycleError('SMOKE_TIMEOUT');
+            }
+            if (smoke!.status !== 'PASS')
+                throw lifecycleError('SMOKE_SCENARIO_FAILED');
+        }
     }
     catch (error) {
         failure = error instanceof RunnerError && error.lifecycle ? error : lifecycleError('ELECTRON_STARTUP_FAILED');
@@ -162,7 +212,7 @@ export async function session() {
             }
         }
     }
-    const result: SessionResult = { version: 1, runId, status: failure ? 'BLOCKED' : 'LIFECYCLE_VERIFIED', shutdownComplete, guiMutations: false, ...(failure ? { diagnostic: failure.lifecycle! } : {}) };
+    const result: SessionResult = { version: 1, runId, status: failure ? 'BLOCKED' : 'LIFECYCLE_VERIFIED', shutdownComplete, guiMutations: mutationsEnabled, ...(smoke ? { smoke } : {}), ...(failure ? { diagnostic: failure.lifecycle! } : {}) };
     await writeFile('/scratch/session-result.json', JSON.stringify(result), { mode: 0o600 });
     if (failure)
         process.exitCode = 3;

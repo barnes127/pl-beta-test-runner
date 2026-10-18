@@ -99,21 +99,32 @@ test('launch approval accepts only the adjacent canonical disposable checkout',a
 });
 async function sessionFixture(options,callback) {
  const proc=require('../dist/processes');const proof=require('../dist/isolation-proof');
- let status;const stopped=[];const children=[];const oldExit=process.exitCode;
+ let status;const stopped=[];const children=[];const events=[];let permitted=false;const oldExit=process.exitCode;
  const mocks=[
- mock.method(proof,'proveInsideSandbox',async()=>[]),mock.method(proof,'verifyApplicationMounts',()=>{}),
+ mock.method(proof,'proveInsideSandbox',async()=>{events.push('proof');return [];}),mock.method(proof,'verifyApplicationMounts',()=>{}),
  mock.method(fs,'access',async()=>{}),
- mock.method(fs,'readFile',async file=>file.endsWith('expected-namespaces.json')?JSON.stringify({runId:'fixture'}):JSON.stringify({status:'READY',securityVerified:true,preloadVerified:true,preloadDeclaredVerified:true,preloadBridgeVerified:true,preloadInspection:'PRESENT',electron:'41.10.6',...options.readiness})),
+ mock.method(fs,'readFile',async file=>{
+   if(file.endsWith('expected-namespaces.json')) return JSON.stringify({runId:'fixture'});
+   if(file.endsWith('smoke-plan.json')) return JSON.stringify({version:1,runId:'fixture',suite:'batch-2-v1',isolationReview:options.invalidPlan?'APPROVED':'PENDING'});
+   if(file.endsWith('smoke-result.json')) {
+     assert.equal(permitted,true);
+     if(options.pendingSmoke) throw Object.assign(new Error('SECRET'),{code:'ENOENT'});
+     return JSON.stringify(options.smokeReport);
+   }
+   return JSON.stringify({status:'READY',securityVerified:true,preloadVerified:true,preloadDeclaredVerified:true,preloadBridgeVerified:true,preloadInspection:'PRESENT',electron:'41.10.6',...options.readiness});
+ }),
+ mock.method(fs,'rename',async(from,to)=>{assert.equal(to,'/scratch/smoke-permit.json');events.push('permit');permitted=true;}),
  mock.method(fs,'writeFile',async(file,data)=>{
+   if(file==='/scratch/smoke-permit.tmp') {assert.equal(events.filter(e=>e==='proof').length,2);assert.equal(events.at(-1),'listener');}
    if(file==='/scratch/stop-electron') {if(options.stopRequestFails) throw new Error('SECRET');if(!options.hangElectron) children[2].child.exitCode=options.exitFailure?2:0;}
    if(file==='/scratch/session-result.json') status=JSON.parse(data);
  }),
  mock.method(fs,'readdir',async()=>[String(process.pid),'1']),
  mock.method(proc,'spawnOwned',async(command)=>{const child={pid:children.length+10,start:'1',child:{exitCode:null,signalCode:null}};children.push(child);return child;}),
- mock.method(proc,'assertPortFree',async()=>{}),mock.method(proc,'assertListenerOwner',async()=>{}),
+ mock.method(proc,'assertPortFree',async()=>{}),mock.method(proc,'assertListenerOwner',async()=>{events.push('listener');if(options.loseOwnershipAtPermit && events.filter(e=>e==='listener').length===3) throw require('../dist/errors').lifecycleError('RPC_OWNERSHIP_FAILED');}),
  mock.method(proc,'waitFor',async condition=>{if(!await condition()) throw new Error('timeout');}),
  mock.method(proc,'stopOwned',async child=>{stopped.push(child.pid);child.child.exitCode=0;if(options.stopFails && child===children[2]) throw new Error('SECRET');})];
- try {await require('../dist/sandbox-session').session();await callback(status,stopped);}
+ try {await require('../dist/sandbox-session').session(options.smoke ?? false);await callback(status,stopped,events);}
  finally {process.exitCode=oldExit;for(const m of mocks.reverse())m.mock.restore();}
 }
 test('forced Electron termination cannot become lifecycle success',async()=>{
@@ -292,4 +303,27 @@ test('supervisor requires separate declaration and bridge proof, including omitt
  for(const readiness of [{preloadDeclaredVerified:undefined},{preloadBridgeVerified:false},{preloadInspection:'UNKNOWN'}]) {
   await sessionFixture({readiness},async result=>assert.equal(result.status,'BLOCKED'));
  }
+});
+function mockedSmokeReport(fail=false) {
+ const ids=require('../dist/smoke-contract').smokeIds;
+ return {version:1,runId:'fixture',status:fail?'FAIL':'PASS',scenarios:ids.map((id,i)=>fail?(i===0?{id,status:'FAIL',reason:'UI_ASSERTION_FAILED'}:{id,status:'NOT_RUN'}):{id,status:'PASS'})};
+}
+test('smoke permit follows fresh isolation and listener proof, and success still requires clean lifecycle',async()=>{
+ await sessionFixture({smoke:true,smokeReport:mockedSmokeReport()},async(result,stopped,events)=>{
+  assert.equal(result.status,'LIFECYCLE_VERIFIED');assert.equal(result.guiMutations,true);assert.equal(result.shutdownComplete,true);assert.equal(result.smoke.status,'PASS');
+  assert.equal(events.filter(e=>e==='permit').length,1);assert.deepEqual(stopped,[12,11,10]);
+  assert.equal(require('../dist/lifecycle-diagnostics').validateSessionResult(result,'fixture',0,true).status,'LIFECYCLE_VERIFIED');
+ });
+});
+test('invalid plan and lost listener ownership cannot publish a smoke mutation permit',async()=>{
+ for(const options of [{invalidPlan:true},{loseOwnershipAtPermit:true}]) await sessionFixture({smoke:true,...options},async(result,stopped,events)=>{
+  assert.equal(result.status,'BLOCKED');assert.equal(result.guiMutations,false);assert.equal(events.includes('permit'),false);
+ });
+});
+test('failed or stalled smoke scenarios still stop every owned process and report failure',async()=>{
+ for(const options of [{smokeReport:mockedSmokeReport(true)},{pendingSmoke:true}]) await sessionFixture({smoke:true,...options},async(result,stopped)=>{
+  assert.equal(result.status,'BLOCKED');assert.equal(result.guiMutations,true);assert.equal(result.shutdownComplete,true);assert.deepEqual(stopped,[12,11,10]);
+  assert.equal(result.diagnostic.reasonCode,options.pendingSmoke?'SMOKE_TIMEOUT':'SMOKE_SCENARIO_FAILED');
+  assert.equal(JSON.stringify(result).includes('SECRET'),false);
+ });
 });

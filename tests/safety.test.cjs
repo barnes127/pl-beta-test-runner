@@ -15,7 +15,17 @@ const clone = () => structuredClone(template);
 const code = expected => error => error instanceof RunnerError && error.code === expected;
 async function fixture(t) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(),'pl-runner-unit-'));
-  t.after(() => fs.rm(base,{recursive:true,force:true}));
+  t.after(async () => {
+    async function leased(dir) {
+      for(const item of await fs.readdir(dir,{withFileTypes:true})) {
+        if(item.name==='.active-process.json') return true;
+        if(item.isDirectory() && await leased(path.join(dir,item.name))) return true;
+      }
+      return false;
+    }
+    if(await leased(base)) {t.diagnostic('Unconfirmed process fixture retained; cleanup was not authorized.');return;}
+    await fs.rm(base,{recursive:true,force:true});
+  });
   const root = await initializeScratchRoot(base);
   return {base,root,scratch:await createScratch(root)};
 }
@@ -136,9 +146,15 @@ async function cliExit(args,env={}) {
     return child.child.exitCode;
   } finally { await stopOwned(child); }
 }
-test('CLI rejects unknown input and keeps GUI scenarios disabled',async()=> {
+test('CLI rejects unknown input and unapproved smoke targets without launching Suite',async t=> {
   assert.equal(await cliExit(['invalid-SECRET'],{PRIVATE_TOKEN:'ENV_SECRET'}),2);
-  assert.equal(await cliExit(['run']),3);
+  assert.equal(await cliExit(['run','--unsafe-mode']),2);
+  const {base}=await fixture(t);
+  await fs.mkdir(path.join(base,'apps/desktop'),{recursive:true});
+  await fs.writeFile(path.join(base,'apps/desktop/main.js'),'fixture');
+  const config=clone();config.targetRoot=base;
+  const configFile=path.join(base,'target.json');await fs.writeFile(configFile,JSON.stringify(config));
+  assert.equal(await cliExit(['run','--config',configFile]),3);
 });
 test('simulated occupied and unobservable ports fail closed',async()=> {
   for (const reason of ['EADDRINUSE','EPERM']) {
@@ -183,7 +199,7 @@ test('shutdown reaps live descendants after leader exits',async t=> {
   try { assert.equal((await require('../dist/processes').processIdentity(pid)).state,'Z'); }
   catch(error) { assert.ok(error instanceof RunnerError && error.code==='OWNERSHIP'); }
 });
-test('failed isolation probe removes only its marked scratch directory',async t=> {
+test('failed isolation probe cleans only after confirmed ownership and retains ambiguous startup',async t=> {
   const {base,root,scratch}=await fixture(t);
   const p=require('node:fs/promises');
   const {isolationPreflight}=require('../dist/isolation');
@@ -191,7 +207,14 @@ test('failed isolation probe removes only its marked scratch directory',async t=
   let result;
   try { result=await isolationPreflight(scratch,process.cwd()); }
   catch(error) { assert.equal(error.code,'ISOLATION_BLOCKED'); }
-  finally { await cleanupScratch(scratch); }
+  finally {
+    try {await cleanupScratch(scratch);}
+    catch(error) {
+      assert.equal(error.code,'OWNERSHIP');
+      assert.ok((await fs.stat(path.join(scratch.directory,'.active-process.json'))).isFile());
+      t.skip('Real probe ownership was unconfirmed; leased fixture retained, no cleanup success claimed.');
+    }
+  }
   if(result) assert.equal(result.reviewed,false);
   assert.ok((await p.stat(root)).isDirectory());
   assert.ok((await p.stat(base)).isDirectory());
